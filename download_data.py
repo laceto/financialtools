@@ -1,7 +1,7 @@
 import polars as pl
 import pandas as pd
 import time
-from financialtools.processor import FinancialDataProcessor
+from financialtools.processor import Downloader
             
             
 # Instantiate the processor for a specific ticker
