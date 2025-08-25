@@ -10,9 +10,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain.output_parsers import OutputFixingParser
 from langchain_core.prompts import ChatPromptTemplate
 from openai import OpenAI
-from pprint import pprint
-from openai.lib._pydantic import to_strict_json_schema
-
 
 load_dotenv()
 client = OpenAI()
@@ -84,72 +81,27 @@ traders should carefully consider before taking a position.
 """
 
 tickers = get_ticker_list()
-# tickers = tickers[:1]
+tickers = tickers[:1]
 
-Structured_Response = to_strict_json_schema(StockRegimeAssessment)
-
-tasks = []
-for ticker in tickers:
-    
-    metrics, composite_scores, red_flags = get_fin_data(ticker)
-
-    fina_data = f"Metrics:\n{metrics}\nComposite score:\n{composite_scores}\nRed flags:\n{red_flags}\n"
-    
-    
-    task = {
-        "custom_id": f"task-{ticker}",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            # This is what you would have in your Chat Completions API call
-            "model": "gpt-4.1-nano",
-            "temperature": 0,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                  "name": "structured_response",
-                  "schema": Structured_Response,
-                  "strict": True
-                }
-            },
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt_template
-                },
-                {
-                    "role": "user",
-                    "content": fina_data
-                }
-            ],
-        }
-    }
-    
-    tasks.append(task)
+metrics_str = get_fin_data(tickers[0])
+metrics_str = metrics_str.to_dict()
+metrics_str = json.dumps(metrics_str)
+# print(metrics_str)
 
 
-# Creating the file
-
-file_name = "batch_tasks_tickers.jsonl"
-
-with open(file_name, 'w') as file:
-    for obj in tasks:
-        file.write(json.dumps(obj) + '\n')
-
-
-# # Uploading the file
-batch_file = client.files.create(
-  file=open(file_name, "rb"),
-  purpose="batch"
+import rich
+completion = client.beta.chat.completions.parse(
+    model="gpt-4.1-nano",
+    messages=[
+        {"role": "system", "content": system_prompt_template},
+        {"role": "user", "content": metrics_str},
+    ],
+    response_format=StockRegimeAssessment,
 )
 
-print(batch_file)
-
-# Creating the batch job
-batch_job = client.batches.create(
-  input_file_id=batch_file.id,
-  endpoint="/v1/chat/completions",
-  completion_window="24h"
-)
-
-print(batch_job)
+message = completion.choices[0].message
+if message.refusal:
+    rich.print(message.refusal)
+else:
+    event = message.parsed
+    rich.print(event)

@@ -1,5 +1,3 @@
-from financialtools.utils import *
-
 from dotenv import load_dotenv, find_dotenv 
 import pandas as pd
 import polars as pl
@@ -9,14 +7,31 @@ from typing import Literal, List, Dict, Optional
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.output_parsers import OutputFixingParser
 from langchain_core.prompts import ChatPromptTemplate
-from openai import OpenAI
-from pprint import pprint
-from openai.lib._pydantic import to_strict_json_schema
+from langchain_openai import ChatOpenAI
 
+from financialtools.utils import *
 
 load_dotenv()
-client = OpenAI()
 
+metrics = (pl.from_pandas(pd.read_excel('financialtools/data/metrics.xlsx'))
+    .filter(pl.col("ticker") == "CPR.MI")
+    .to_pandas())
+metrics = metrics.to_json(orient="records") 
+
+composite_scores = (pl.from_pandas(pd.read_excel('financialtools/data/composite_scores.xlsx'))
+    .filter(pl.col("ticker") == "CPR.MI")
+    .to_pandas())
+composite_scores = composite_scores.to_json(orient="records") 
+
+red_flags = pl.concat([
+    (pl.from_pandas(pd.read_excel('financialtools/data/red_flags.xlsx'))
+        .filter(pl.col("ticker") == "CPR.MI")),
+    (pl.from_pandas(pd.read_excel('financialtools/data/raw_red_flags.xlsx'))
+        .filter(pl.col("ticker") == "CPR.MI"))]
+).to_pandas()
+red_flags = red_flags.to_json(orient="records") 
+
+# Pydantic output model
 class StockRegimeAssessment(BaseModel):
     ticker: str = Field(..., description="The ticker of the stock under analysis")
     regime: Literal["bull", "bear", "postpone"] = Field(
@@ -38,6 +53,18 @@ class StockRegimeAssessment(BaseModel):
             "such as contradictory indicators, anomalies, or important red flags."
         )
     )
+
+
+# Instantiate the LLM (OpenAI GPT-4 or your preferred model)
+llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0)
+
+# Instantiate the parser with the Pydantic model
+parser = PydanticOutputParser(pydantic_object=StockRegimeAssessment)
+# Wrap your parser with OutputFixingParser
+parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
+
+# Get the format instructions string from the parser
+format_instructions = parser.get_format_instructions()
 
 system_prompt_template = """
 You are a trader assistant specializing in fundamental analysis. 
@@ -83,73 +110,58 @@ traders should carefully consider before taking a position.
 
 """
 
-tickers = get_ticker_list()
-# tickers = tickers[:1]
+# Create a ChatPromptTemplate with system message and user input
 
-Structured_Response = to_strict_json_schema(StockRegimeAssessment)
+system_prompt_filled = system_prompt_template.format(format_instructions=format_instructions)
 
-tasks = []
-for ticker in tickers:
-    
-    metrics, composite_scores, red_flags = get_fin_data(ticker)
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt_filled),
+    ("human", "The ticker is:\n{ticker}\nMetrics:\n{metrics}\nScores:\n{scores}\nRedFlags:\n{red_flags}"),
+])
 
-    fina_data = f"Metrics:\n{metrics}\nComposite score:\n{composite_scores}\nRed flags:\n{red_flags}\n"
-    
-    
-    task = {
-        "custom_id": f"task-{ticker}",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            # This is what you would have in your Chat Completions API call
-            "model": "gpt-4.1-nano",
-            "temperature": 0,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                  "name": "structured_response",
-                  "schema": Structured_Response,
-                  "strict": True
-                }
-            },
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt_template
-                },
-                {
-                    "role": "user",
-                    "content": fina_data
-                }
-            ],
-        }
-    }
-    
-    tasks.append(task)
+# Create a runnable chain: prompt followed by LLM invocation
+chain = prompt | llm | parser
 
+ticker_str = 'CPR.MI'
+# metrics_str = json.dumps(metrics, indent=2)
+# scores_str = json.dumps(composite_scores, indent=2)
+# red_flags_str = json.dumps(red_flags, indent=2)
 
-# Creating the file
+metrics_str = get_fin_data('CPR.MI')
 
-file_name = "batch_tasks_tickers.jsonl"
+# metrics_str = metrics_str.round(2)
+metrics_str = metrics_str.to_dict()
+metrics_str = json.dumps(metrics_str)
 
-with open(file_name, 'w') as file:
-    for obj in tasks:
-        file.write(json.dumps(obj) + '\n')
+print(metrics_str)
+
+# Then invoke with a dict containing 'financial_data'
+# response = chain.invoke({
+#     "ticker": ticker_str,
+#     "metrics": metrics_str,  
+#     "scores": scores_str,
+#     "red_flags": red_flags_str,    
+# })
+
+# print(response)
+
+# print(response.model_dump_json())
+
+# prompt_value = prompt.invoke({
+#     "ticker": ticker_str,
+#     "metrics": metrics_str,  
+#     "scores": scores_str,
+#     "red_flags": red_flags_str,    
+# })
+
+# print(prompt_value.messages[0].content[0])
+# print(prompt_value.messages[1].content[0])
 
 
-# # Uploading the file
-batch_file = client.files.create(
-  file=open(file_name, "rb"),
-  purpose="batch"
-)
+# from financialtools.utils import *
 
-print(batch_file)
+# tickers = get_ticker_list()
+# tickers = tickers[:2]
 
-# Creating the batch job
-batch_job = client.batches.create(
-  input_file_id=batch_file.id,
-  endpoint="/v1/chat/completions",
-  completion_window="24h"
-)
+# financial_data = [get_fin_data(ticker) for ticker in tickers]
 
-print(batch_job)
