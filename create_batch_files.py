@@ -85,6 +85,17 @@ tickers = tickers[:1]
 
 # json_schema = StockRegimeAssessment.model_json_schema()
 # print(json_schema)
+
+# class Structured_Response(BaseModel): 
+#     Score: int
+#     Reason: str
+
+from pprint import pprint
+
+from openai.lib._pydantic import to_strict_json_schema
+Structured_Response = to_strict_json_schema(StockRegimeAssessment)
+pprint(Structured_Response, sort_dicts=False)
+
 tasks = []
 for ticker in tickers:
     
@@ -104,7 +115,14 @@ for ticker in tickers:
             # This is what you would have in your Chat Completions API call
             "model": "gpt-4.1-nano",
             "temperature": 0,
-            # "response_format": json_schema,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                  "name": "structured_response",
+                  "schema": Structured_Response,
+                  "strict": True
+                }
+            },
             "messages": [
                 {
                     "role": "system",
