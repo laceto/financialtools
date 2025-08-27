@@ -19,7 +19,7 @@ client = OpenAI()
 
 class StockRegimeAssessment(BaseModel):
     ticker: str = Field(..., description="The ticker of the stock under analysis")
-    regime: Literal["bull", "bear", "postpone"] = Field(
+    regime: Literal["bull", "bear"] = Field(
         ..., description="The fundamental regime classification of the stock"
     )
     rationale: str = Field(
@@ -47,7 +47,6 @@ the stock’s current fundamental regime as one of:
 
 - bull: Strong and improving fundamentals supporting a positive outlook.
 - bear: Weak or deteriorating fundamentals indicating risk or decline.
-- postpone: Mixed or inconclusive fundamentals suggesting to wait for clearer signals.
 
 Financial data constists of financial metrics, composite score and red flags.
 
@@ -91,7 +90,7 @@ Structured_Response = to_strict_json_schema(StockRegimeAssessment)
 tasks = []
 for ticker in tickers:
     
-    metrics, composite_scores, red_flags = get_fin_data(ticker)
+    metrics, composite_scores, red_flags = get_fin_data(ticker, 2024)
 
     fina_data = f"Metrics:\n{metrics}\nComposite score:\n{composite_scores}\nRed flags:\n{red_flags}\n"
     

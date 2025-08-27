@@ -3,14 +3,17 @@ import json
 import pandas as pd
 import numpy as np
 
-import pandas as pd
+import polars as pl
+from typing import List, Union, Optional
+
 
 class Downloader:
-    def __init__(self, ticker, balance_sheet, income_stmt, cashflow):
+    def __init__(self, ticker, balance_sheet, income_stmt, cashflow, info):
         self.ticker = ticker
         self._balance_sheet = balance_sheet
         self._income_stmt = income_stmt
         self._cashflow = cashflow
+        self._info = info
 
     @classmethod
     def from_ticker(cls, ticker):
@@ -18,40 +21,38 @@ class Downloader:
             bs = cls.__reshape_fin_data(cls.get_balance_sheet(ticker))
             inc = cls.__reshape_fin_data(cls.get_income_stmt(ticker))
             cf = cls.__reshape_fin_data(cls.get_cashflow(ticker))
-            return cls(ticker, bs, inc, cf)
+            # info = cls.get_info(ticker)
+            # info = cls.get_info(ticker)
+            info = cls.__filter_info(cls.get_info(ticker))
+            return cls(ticker, bs, inc, cf, info)
         except Exception as e:
             print(f"Failed to create FinancialDataProcessor for {ticker}: {e}")
-            return cls(ticker, pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+            return cls(ticker, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
     def get_merged_data(self):
         """Public method to get merged financial data."""
         try:
             df_merged = self._balance_sheet.merge(self._cashflow, how="left", on=["ticker", "time"])
-            return df_merged.merge(self._income_stmt, how="left", on=["ticker", "time"])
+            df_merged = df_merged.merge(self._income_stmt, how="left", on=["ticker", "time"])
+            return df_merged.merge(self._info, how="left", on=["ticker"])
             # return pd.concat([, self._income_stmt, self._cashflow], ignore_index=True)
         except Exception as e:
             print(f"Error merging data: {e}")
             return pd.DataFrame()
 
-    def export_to_csv(self, path):
-        """Public method to export merged data to CSV."""
-        try:
-            df = self.get_merged_data()
-            df.to_csv(path, index=False)
-            print(f"Data exported to {path}")
-        except Exception as e:
-            print(f"Error exporting to CSV: {e}")
-            
-    def export_to_xlsx(self, path, sheet_name):
-        """Public method to export merged data to CSV."""
-        try:
-            df = self.get_merged_data()
-            with pd.ExcelWriter(path, engine="openpyxl") as writer:
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-            print(f"Data exported to {path}")
-        except Exception as e:
-            print(f"Error exporting to CSV: {e}")
 
+    @staticmethod        
+    def __filter_info(df):
+
+        df = df[df["key"].str.contains("marketCap|sharesOutstanding|PE|regularMarketPrice|currentPrice|priceToBook", case=True, na=False)]
+        df = df.pivot(
+            index=["ticker"],
+            columns='key',
+            values='value'
+        ).reset_index()
+        
+        return df
+        
     @staticmethod
     def __reshape_fin_data(df):
         """Private method to reshape financial data."""
@@ -85,6 +86,8 @@ class Downloader:
         except Exception as e:
             print(f"Error filtering column '{col}': {e}")
             return pd.DataFrame()
+        
+
 
     # Placeholder methods for data retrieval
     @staticmethod
@@ -132,6 +135,27 @@ class Downloader:
             print(f"Error retrieving cash flow for {sym}: {e}")
             return pd.DataFrame()
         
+    @staticmethod
+    def get_info(sym):
+        """
+        Retrieve stock.info safely. Always returns a dict with:
+        - 'ticker': the symbol
+        - 'docs': the info dictionary (or {} if empty)
+        - 'error': only if an exception occurred
+        """
+
+        try:
+            stock = yf.Ticker(sym)
+            info = stock.info
+            if info and isinstance(info, dict):
+                info = pd.DataFrame(list(info.items()), columns=["key", "value"])
+                info.insert(0, "ticker", sym)
+                # info.insert(1, "docs", 'info')
+
+        except Exception as e:
+            info["error"] = str(e)
+        return info
+        
 
 
 import pandas as pd
@@ -146,6 +170,7 @@ class FundamentalTraderAssistant:
     def __init__(self, data: pd.DataFrame, weights: dict):
         self.d = data
         self.metrics = {}
+        self.eval_metrics = {}
         self.scores = {}
         # Store grouped weights
         self.weights = weights
@@ -164,6 +189,31 @@ class FundamentalTraderAssistant:
             print(f"Error in safe_div: {e}")
             return pd.Series([np.nan] * len(num))
 
+    def compute_valuation_metrics(self):
+        try:
+            d = self.d.copy()
+
+            # valuation
+            d['bvps'] = d["common_stock_equity"] / d['sharesoutstanding']
+            d['fcf_per_share'] = self.safe_div(d["free_cash_flow"], d["sharesoutstanding"])
+            d['eps'] = d['diluted_eps']
+
+            d["P/E"] = self.safe_div(d["currentprice"], d["eps"])
+            d["P/B"] = self.safe_div(d["currentprice"], d["bvps"])
+            d["P/FCF"] = self.safe_div(d["currentprice"], d["fcf_per_share"])
+            d["EarningsYield"] = self.safe_div(d["eps"], d["currentprice"])
+            d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["marketcap"])
+
+            metric_cols = ["bvps", "fcf_per_share", "eps", "P/E",
+                           "P/B", "P/FCF", "EarningsYield", "FCFYield"]
+
+            d = d[["ticker", "time"] + metric_cols]
+            self.eval_metrics = d
+            return d
+        except Exception as e:
+            print(f"Error in compute_metrics: {e}")
+            return pd.DataFrame()
+        
     def compute_metrics(self):
         try:
             d = self.d.copy()
@@ -180,12 +230,12 @@ class FundamentalTraderAssistant:
 
             # Cash Flow Metrics
             d["FCFToRevenue"] = self.safe_div(d["free_cash_flow"], d["total_revenue"])
-            d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["total_capitalization"])
+            d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["marketcap"])
             d["FCFtoDebt"] = self.safe_div(d["free_cash_flow"], d["total_debt"])
 
             # Leverage & Liquidity
             d["DebtToEquity"] = self.safe_div(d["total_debt"], d["common_stock_equity"])
-            d["CurrentRatio"] = self.safe_div(d["working_capital"], d["total_liabilities_net_minority_interest"])
+            d["CurrentRatio"] = self.safe_div(d["current_assets"], d["current_liabilities"])
 
             metric_cols = ["GrossMargin", "OperatingMargin", "NetProfitMargin", "EBITDAMargin",
                            "ROA", "ROE", "FCFToRevenue", "FCFYield", "FCFtoDebt",
@@ -322,6 +372,7 @@ class FundamentalTraderAssistant:
         try:
             # Step 1: Compute metrics
             m = self.compute_metrics()
+            ev = self.compute_valuation_metrics()
 
             # Step 2: Detect raw red flags (custom logic, if defined elsewhere)
             d = self.raw_red_flags()
@@ -363,6 +414,7 @@ class FundamentalTraderAssistant:
             # Step 8: Return all results
             return {
                 "metrics": self.metrics,
+                "eval_metrics": self.eval_metrics,
                 "composite_scores": self.scores,
                 "raw_red_flags": d,
                 "red_flags": self.red_flags,

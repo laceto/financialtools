@@ -30,7 +30,7 @@ import json
 # Note: this can take up to 24h, but it will usually be completed faster.
 # You can continue checking until the status is 'completed'.
 
-batch_job = client.batches.retrieve('batch_68ac37c5dddc8190a482160adcfec115')
+batch_job = client.batches.retrieve('batch_68ac6ec9eb888190aea6130109d29a8c')
 
 print(batch_job)
 # print(batch_job.id)
@@ -40,7 +40,7 @@ print(batch_job)
 # # # Retrieving results
 result_file_id = batch_job.output_file_id
 result = client.files.content(result_file_id).content
-result_file_name = "batch_job_results_tickers.jsonl"
+result_file_name = "batch_job_results_tickers_nopostpone_1year.jsonl"
 
 with open(result_file_name, 'wb') as file:
     file.write(result)
@@ -69,6 +69,6 @@ with open(result_file_name, 'r') as file:
 #     print(f"TITLE: {title}\nOVERVIEW: {description}\n\nRESULT: {result}")
 #     print("\n\n----------------------------\n\n")
 
-print(results[0]['response']['body']['choices'][0]['message']['content'])
+# print(results[0]['response']['body']['choices'][0]['message']['content'])
 
 

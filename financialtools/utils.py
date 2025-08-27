@@ -6,110 +6,218 @@ import numpy as np
 from financialtools.processor import FundamentalTraderAssistant
 import json
 
-def preprocess_df(df, ticker):
+import polars as pl
+from typing import List, Union, Optional
+
+def export_to_csv(df, path):
+        """Public method to export merged data to CSV."""
+        try:
+            df.to_csv(path, index=False)
+            print(f"Data exported to {path}")
+        except Exception as e:
+            print(f"Error exporting to CSV: {e}")
+            
+def export_to_xlsx(df, path, sheet_name):
+        """Public method to export merged data to CSV."""
+        try:
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"Data exported to {path}")
+        except Exception as e:
+            print(f"Error exporting to CSV: {e}")
+
+def get_tickers(
+    filepath: str = "financialtools/data/sector_ticker.txt", 
+    columns: Union[List[str], str, None] = None,
+    pattern: Optional[str] = None
+):
     """
-    Preprocesses the input DataFrame by:
-    - Filtering rows for the specified ticker
-    - Extracting the year from the 'time' column
-    - Reordering columns to place 'time' last
+    Load tickers from file. Optionally select specific columns.
+    - If only one column is selected, return as a Series instead of a DataFrame.
+    - If pattern is provided, filters rows where `ticker` contains the pattern.
+    """
+    # Base DataFrame
+    df = (
+        pl.read_csv(filepath, separator="\t")
+        .select(["ticker", "sector", "name", "marginabile"])
+    )
+    
+    # Apply pattern filter if given
+    if pattern is not None:
+        df = df.filter(df["ticker"].str.contains(pattern, literal=False, strict=False))
+    
+    # Handle column selection
+    if columns is None:
+        return df
+    
+    if isinstance(columns, str):  # single column as string
+        return df[columns]
+    
+    if isinstance(columns, list):  # multiple columns
+        if len(columns) == 1:  # only one column
+            return df[columns[0]]
+        return df.select(columns)
+
+    raise ValueError("`columns` must be None, str, or list of str")
+
+# Example usage:
+# tickers_all = get_tickers()  
+# tickers_only = get_tickers(columns="ticker")  
+# tickers_subset = get_tickers(columns=["ticker", "sector"])  
+# tickers_filtered = get_tickers(pattern="MI", columns="ticker")  # only tickers containing "MI"
+
+
+
+def dataframe_to_json(df):
+    """
+    Converts a pandas DataFrame to a JSON-formatted string.
 
     Parameters:
-        df (pd.DataFrame): Original DataFrame
-        ticker (str): Ticker symbol to filter by
+        df (pd.DataFrame): The DataFrame to convert.
 
     Returns:
-        pd.DataFrame: Preprocessed DataFrame
+        str: JSON-formatted string.
     """
-    try:
-        return (
-            pl.from_pandas(df)
-            .filter(pl.col("ticker") == ticker)
-            .with_columns(pl.col("time").dt.year().alias("time"))
-            .select([col for col in df.columns if col != "time"] + ["time"])
-            .to_pandas()
-        )
-    except Exception as e:
-        print(f"Error preprocessing data for ticker {ticker}: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on failure
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Input must be a pandas DataFrame.")
 
-def get_fundamental_output(df, ticker, weights):
-    """
-    Evaluates fundamental metrics for a given ticker using the FundamentalTraderAssistant.
+    df_dict = df.to_dict(orient='records')
+    # df_dict = df.to_dict(orient=orient)
+    json_str = json.dumps(df_dict)
 
-    Parameters:
-        df (pd.DataFrame): Original DataFrame
-        ticker (str): Ticker symbol to evaluate
-        weights (dict): Grouped weights for evaluation
+    return json_str
 
-    Returns:
-        dict: Dictionary containing evaluation results
-    """
-    try:
-        processed_df = preprocess_df(df, ticker)
-        if processed_df.empty:
-            raise ValueError("Processed DataFrame is empty.")
-        assistant = FundamentalTraderAssistant(data=processed_df, weights=weights)
-        return assistant.evaluate()
-    except Exception as e:
-        print(f"Error evaluating ticker {ticker}: {e}")
-        return {
-            'metrics': pd.DataFrame(),
-            'composite_scores': pd.DataFrame(),
-            'red_flags': pd.DataFrame(),
-            'raw_red_flags': pd.DataFrame()
-        }
+# def preprocess_df(df, ticker):
+#     """
+#     Preprocesses the input DataFrame by:
+#     - Filtering rows for the specified ticker
+#     - Extracting the year from the 'time' column
+#     - Reordering columns to place 'time' last
 
-def merge_results(results, key):
-    """
-    Merges a specific key from multiple result dictionaries into a single DataFrame.
+#     Parameters:
+#         df (pd.DataFrame): Original DataFrame
+#         ticker (str): Ticker symbol to filter by
 
-    Parameters:
-        results (list): List of result dictionaries
-        key (str): Key to extract and merge
+#     Returns:
+#         pd.DataFrame: Preprocessed DataFrame
+#     """
+#     try:
+#         return (
+#             pl.from_pandas(df)
+#             .filter(pl.col("ticker") == ticker)
+#             .with_columns(pl.col("time").dt.year().alias("time"))
+#             .select([col for col in df.columns if col != "time"] + ["time"])
+#             .to_pandas()
+#         )
+#     except Exception as e:
+#         print(f"Error preprocessing data for ticker {ticker}: {e}")
+#         return pd.DataFrame()  # Return empty DataFrame on failure
 
-    Returns:
-        pd.DataFrame: Concatenated DataFrame for the specified key
-    """
-    try:
-        return pd.concat([result.get(key) for result in results], ignore_index=True)
-    except Exception as e:
-        print(f"Error merging results for key '{key}': {e}")
-        return pd.DataFrame()
+# def get_fundamental_output(df, ticker, weights):
+#     """
+#     Evaluates fundamental metrics for a given ticker using the FundamentalTraderAssistant.
 
-def get_ticker_list():
+#     Parameters:
+#         df (pd.DataFrame): Original DataFrame
+#         ticker (str): Ticker symbol to evaluate
+#         weights (dict): Grouped weights for evaluation
 
-    df = pd.read_excel('financialtools/data/metrics.xlsx')
-    df.columns = df.columns.str.lower().str.replace(" ", "_")
+#     Returns:
+#         dict: Dictionary containing evaluation results
+#     """
+#     try:
+#         # processed_df = preprocess_df(df, ticker)
+#         processed_df = df[df['ticker'] == ticker]
+#         print(processed_df)
+#         if processed_df.empty:
+#             raise ValueError("Processed DataFrame is empty.")
+#         assistant = FundamentalTraderAssistant(data=processed_df, weights=weights)
+#         return assistant.evaluate()
+#     except Exception as e:
+#         print(f"Error evaluating ticker {ticker}: {e}")
+#         return {
+#             'metrics': pd.DataFrame(),
+#             'eval_metrics': pd.DataFrame(),
+#             'composite_scores': pd.DataFrame(),
+#             'red_flags': pd.DataFrame(),
+#             'raw_red_flags': pd.DataFrame()
+#         }
 
-    # Get unique tickers
-    try:
-        tickers = (
-            pl.from_pandas(df)
-            .select("ticker")
-            .unique()
-            .get_column("ticker")
-            .to_list()
-        )
-    except Exception as e:
-        print(f"Error extracting tickers: {e}")
-        tickers = []
+# def merge_results(results, key):
+#     """
+#     Merges a specific key from multiple result dictionaries into a single DataFrame.
 
-    return tickers
+#     Parameters:
+#         results (list): List of result dictionaries
+#         key (str): Key to extract and merge
 
-# print(get_ticker_list())
+#     Returns:
+#         pd.DataFrame: Concatenated DataFrame for the specified key
+#     """
+#     try:
+#         return pd.concat([result.get(key) for result in results], ignore_index=True)
+#     except Exception as e:
+#         print(f"Error merging results for key '{key}': {e}")
+#         return pd.DataFrame()
 
-def get_fin_data(ticker):
+# def get_ticker_list():
+
+#     df = pd.read_excel('financialtools/data/metrics.xlsx')
+#     df.columns = df.columns.str.lower().str.replace(" ", "_")
+
+#     # Get unique tickers
+#     try:
+#         tickers = (
+#             pl.from_pandas(df)
+#             .select("ticker")
+#             .unique()
+#             .get_column("ticker")
+#             .to_list()
+#         )
+#     except Exception as e:
+#         print(f"Error extracting tickers: {e}")
+#         tickers = []
+
+#     return tickers
+
+# def get_fin_data(ticker, year=None):
+#     def load_and_filter(path, year_filter=False):
+#         df = pl.from_pandas(pd.read_excel(path)).filter(pl.col("ticker") == ticker)
+#         if year_filter and year is not None:
+#             df = df.filter(pl.col("time") == year)
+#         return df
+
+#     # Metrics
+#     metrics_df = load_and_filter('financialtools/data/metrics.xlsx', year_filter=True).to_pandas()
+#     metrics_df = metrics_df.round(2)
+#     metrics = json.dumps(metrics_df.to_dict())
+
+#     # Composite Scores
+#     composite_df = load_and_filter('financialtools/data/composite_scores.xlsx', year_filter=True).to_pandas()
+#     composite_scores = json.dumps(composite_df.to_dict())
+
+#     # Red Flags
+#     red_flags_df = pl.concat([
+#         load_and_filter('financialtools/data/red_flags.xlsx', year_filter=True),
+#         load_and_filter('financialtools/data/raw_red_flags.xlsx', year_filter=True)
+#     ]).to_pandas()
+#     red_flags = json.dumps(red_flags_df.to_dict())
+
+#     return metrics, composite_scores, red_flags
+
+
+def get_fin_data_year(ticker, year):
     # print(ticker)
-    metrics = (pl.from_pandas(pd.read_excel('financialtools/data/metrics.xlsx'))
+    metrics = (pl.from_pandas(pd.read_excel('financial_data/metrics.xlsx'))
         .filter(pl.col("ticker") == ticker)
+        .filter(pl.col("time") == year)
         .to_pandas())
     metrics = metrics.round(2)
     metrics = metrics.to_dict()
-    # metrics = metrics.to_json(orient="records")
     metrics = json.dumps(metrics)
 
 
-    composite_scores = (pl.from_pandas(pd.read_excel('financialtools/data/composite_scores.xlsx'))
+    composite_scores = (pl.from_pandas(pd.read_excel('financial_data/composite_scores.xlsx'))
         .filter(pl.col("ticker") == ticker)
         .to_pandas())
     composite_scores = composite_scores.to_dict()
@@ -117,14 +225,16 @@ def get_fin_data(ticker):
 
 
     red_flags = pl.concat([
-        (pl.from_pandas(pd.read_excel('financialtools/data/red_flags.xlsx'))
-            .filter(pl.col("ticker") == ticker)),
-        (pl.from_pandas(pd.read_excel('financialtools/data/raw_red_flags.xlsx'))
-            .filter(pl.col("ticker") == ticker))]
+        (pl.from_pandas(pd.read_excel('financial_data/red_flags.xlsx'))
+            .filter(pl.col("ticker") == ticker)
+            .filter(pl.col("time") == year)
+            ),
+        (pl.from_pandas(pd.read_excel('financial_data/raw_red_flags.xlsx'))
+            .filter(pl.col("ticker") == ticker)
+            .filter(pl.col("time") == year)
+            )]
     ).to_pandas()
     red_flags = red_flags.to_dict()
     red_flags = json.dumps(red_flags)
-
-    # fin_data = f"The ticker is:\n{ticker}.\nMetrics:\n{metrics}\n.Composite scores:\n{composite_scores}\nRed flags:\n{red_flags}"
 
     return metrics, composite_scores, red_flags
