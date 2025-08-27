@@ -238,3 +238,13 @@ def get_fin_data_year(ticker, year):
     red_flags = json.dumps(red_flags)
 
     return metrics, composite_scores, red_flags
+
+
+import os
+
+def create_newbatch_folder(file_name, batch_job_id):
+    batch_files_folder = 'batch_files/'
+    batch_files_folder_task = str(batch_files_folder)+str(batch_job_id)
+    os.makedirs(batch_files_folder_task, exist_ok=True)
+    new_name = batch_files_folder_task+str('/')+str('input.jsonl')
+    os.rename(file_name, new_name)

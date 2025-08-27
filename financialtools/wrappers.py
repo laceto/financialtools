@@ -7,6 +7,38 @@ from financialtools.utils import export_to_xlsx
 from financialtools.processor import Downloader, FundamentalTraderAssistant
 
 
+import logging
+import traceback
+
+# Create logger
+logger = logging.getLogger('TickerDownloader')
+logger.setLevel(logging.DEBUG)
+
+# Formatter with timestamp and message
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# Info handler
+info_handler = logging.FileHandler('logs/info.log')
+info_handler.setLevel(logging.INFO)
+info_handler.setFormatter(formatter)
+
+# Error handler
+error_handler = logging.FileHandler('logs/error.log')
+error_handler.setLevel(logging.ERROR)
+error_handler.setFormatter(formatter)
+
+# Debug handler
+debug_handler = logging.FileHandler('logs/debug.log')
+debug_handler.setLevel(logging.DEBUG)
+debug_handler.setFormatter(formatter)
+
+# Add handlers
+logger.addHandler(info_handler)
+logger.addHandler(error_handler)
+logger.addHandler(debug_handler)
+
+
+
 class DownloaderWrapper:
 
     @staticmethod
@@ -38,17 +70,22 @@ class DownloaderWrapper:
         """
         Internal helper: Download and return data for a single ticker.
         Returns None if download fails.
+        Logs to multiple files with timestamp and ticker context.
         """
+        logger.info(f"[{ticker}] Starting download")
         try:
-            time.sleep(1)  # avoid hitting rate limits
+            time.sleep(2)  # avoid hitting rate limits
             processor = Downloader.from_ticker(ticker)
             merged_data = processor.get_merged_data()
             merged_data.columns = merged_data.columns.str.lower().str.replace(" ", "_")
             merged_data = DownloaderWrapper._preprocess_df(merged_data)
+            logger.info(f"[{ticker}] Download and processing successful")
             return merged_data
         except Exception as e:
-            print(f"Error fetching data for ticker '{ticker}': {e}")
+            logger.error(f"[{ticker}] Error: {e}")
+            logger.debug(f"[{ticker}] Traceback:\n{traceback.format_exc()}")
             return None
+
 
     @staticmethod
     def _download_multiple_tickers(tickers: list[str]) -> pd.DataFrame | None:

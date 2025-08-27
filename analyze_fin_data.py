@@ -6,7 +6,7 @@ from financialtools.utils import get_tickers, export_to_xlsx
 from financialtools.config import grouped_weights
 from financialtools.wrappers import FundamentalEvaluator, export_financial_results
 
-tickers = get_tickers(columns='ticker').to_list()[:2]
+tickers = get_tickers(columns='ticker').to_list()
 
 fundamental_eval = FundamentalEvaluator(data, grouped_weights)
 results = fundamental_eval.evaluate_multiple(tickers, parallel=True)
