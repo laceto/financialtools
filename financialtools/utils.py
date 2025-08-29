@@ -96,8 +96,60 @@ def get_sector_weights(sector: str) -> dict:
     """
     return sector_metric_weights.get(sector, sector_metric_weights["Default"])
 
+def get_sector_for_ticker(ticker: str) -> str:
+    """
+    Returns the sector for a given ticker symbol.
 
+    Parameters:
+    - ticker (str): The ticker symbol to look up.
 
+    Returns:
+    - str: The sector associated with the ticker.
+    """
+    tickers_sector = get_tickers(columns=['ticker', 'sector'])
+    result = tickers_sector.filter(pl.col('ticker') == ticker).select('sector').to_series().to_list()
+
+    if not result:
+        raise ValueError(f"Ticker '{ticker}' not found.")
+
+    sector = result[0]
+
+    return sector
+
+def get_market_metrics(sector: str, year: int | None = None, file_path: str = 'financial_data/metrics_by_sectors.xlsx') -> pd.DataFrame:
+    """
+    Loads and filters market metrics for a given sector, optionally by year.
+    If year is None, returns mean market value grouped by metrics, including sector.
+
+    Parameters:
+    - sector (str): Sector name to filter by.
+    - year (int | None): Year to filter by. If None, aggregates over all years.
+    - file_path (str): Path to the Excel file.
+
+    Returns:
+    - pd.DataFrame: Filtered or aggregated DataFrame including 'sector'.
+    """
+    df = pd.read_excel(file_path)
+
+    sector_df = df.query("sector == @sector")
+
+    if sector_df.empty:
+        raise ValueError(f"No data found for sector '{sector}'.")
+
+    if year is not None:
+        filtered_df = sector_df.query("time == @year")
+        if filtered_df.empty:
+            raise ValueError(f"No data found for sector '{sector}' in year {year}.")
+        return filtered_df[["sector", "metrics", "market_value", "time"]]
+    else:
+        grouped = (
+            sector_df
+            .groupby(["sector", "metrics"], dropna=False, sort=False)
+            .agg(mean_market_value=("market_value", "mean"))
+            .reset_index()
+        )
+        return grouped
+    
 # def preprocess_df(df, ticker):
 #     """
 #     Preprocesses the input DataFrame by:
