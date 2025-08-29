@@ -4,6 +4,7 @@ import pandas as pd
 import polars as pl
 import numpy as np
 from financialtools.processor import FundamentalTraderAssistant
+from financialtools.config import sector_metric_weights
 import json
 
 import polars as pl
@@ -86,6 +87,16 @@ def dataframe_to_json(df):
     json_str = json.dumps(df_dict)
 
     return json_str
+
+
+def get_sector_weights(sector: str) -> dict:
+    """
+    Return sector-specific metric weights if available,
+    otherwise fall back to 'Default'.
+    """
+    return sector_metric_weights.get(sector, sector_metric_weights["Default"])
+
+
 
 # def preprocess_df(df, ticker):
 #     """
