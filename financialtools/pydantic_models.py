@@ -85,8 +85,8 @@ class StockRegimeAssessment(BaseModel):
     evaluation_rationale: str = Field(
         ..., description="Concise explanation justifying the evaluation classification based on the financial metrics, composite ratio and red flags"
     )
-    market_eval_metrics_comparison: str = Field(
+    market_comparison: str = Field(
         ..., description=(
-            "A summary description of how stock metrics compare to the market metrics"
+            "A summary description of how stock metrics compare to the market metrics in term of fundamentals and valuation"
         )
     )
