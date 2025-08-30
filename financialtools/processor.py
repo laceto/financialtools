@@ -6,6 +6,7 @@ import numpy as np
 import polars as pl
 from typing import List, Union, Optional
 
+from financialtools.utils import get_sector_for_ticker, get_sector_weights
 
 class Downloader:
     def __init__(self, ticker, balance_sheet, income_stmt, cashflow, info):
@@ -158,8 +159,7 @@ class Downloader:
         
 
 
-import pandas as pd
-import numpy as np
+
 
 class FundamentalTraderAssistant:
     """
@@ -172,15 +172,11 @@ class FundamentalTraderAssistant:
         self.metrics = {}
         self.eval_metrics = {}
         self.scores = {}
-        # Store grouped weights
-        self.weights = weights
+        # self.weights = weights
+        self.ticker = data['ticker'].unique()[0]
+        self.sector = get_sector_for_ticker(self.ticker)
+        self.weights = get_sector_weights(self.sector)
 
-        # Flatten weights for scoring
-        self.w = {
-            metric: weight
-            for group in weights.values()
-            for metric, weight in group.items()
-        }
 
     def safe_div(self, num, den):
         try:
@@ -280,11 +276,11 @@ class FundamentalTraderAssistant:
         df['score'] = df.apply(score_row, axis=1)
         return df
     
-    def get_metric_category(self, metric):
-        for category, metrics in self.weights.items():
-            if metric in metrics:
-                return category
-        return "Uncategorized"
+    # def get_metric_category(self, metric):
+    #     for category, metrics in self.weights.items():
+    #         if metric in metrics:
+    #             return category
+    #     return "Uncategorized"
     
     def compute_scores(self):
         try:
@@ -294,7 +290,7 @@ class FundamentalTraderAssistant:
             df = self.metrics.melt(id_vars=["ticker", "time"], var_name="metrics", value_name="value")
             scored = self.score_metric(df)
             # Add category column
-            scored["category"] = scored["metrics"].apply(self.get_metric_category)
+            # scored["category"] = scored["metrics"].apply(self.get_metric_category)
 
             self.scores = scored
             return scored
@@ -389,7 +385,11 @@ class FundamentalTraderAssistant:
             s = self.score_metric(m_long)
 
             # Step 5: Merge weights
-            weights = pd.DataFrame(list(self.w.items()), columns=["metrics", "Weight"])
+            # weights = pd.DataFrame(list(self.w.items()), columns=["metrics", "Weight"])
+
+            
+
+            weights = self.weights
             s = s.merge(weights, how="left", on="metrics")
 
             # Step 6: Compute composite scores

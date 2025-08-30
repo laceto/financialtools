@@ -3,7 +3,7 @@
 import pandas as pd
 import polars as pl
 import numpy as np
-from financialtools.processor import FundamentalTraderAssistant
+# from financialtools.processor import FundamentalTraderAssistant
 from financialtools.config import sector_metric_weights
 import json
 
@@ -91,10 +91,27 @@ def dataframe_to_json(df):
 
 def get_sector_weights(sector: str) -> dict:
     """
-    Return sector-specific metric weights if available,
-    otherwise fall back to 'Default'.
+    Loads sector weights from an Excel file and returns them as a dictionary
+    for the specified sector.
+
+    Parameters:
+    - sector (str): The sector to filter by.
+
+    Returns:
+    - df: Dataframe weights.
     """
-    return sector_metric_weights.get(sector, sector_metric_weights["Default"])
+    df = (
+        pd.read_excel('financialtools/data/weights.xlsx')
+        .melt(id_vars=["sector"], var_name="metrics", value_name="Weight")
+    )
+
+    filtered = df[df["sector"] == sector]
+    filtered = filtered[["metrics", "Weight"]]
+
+    if filtered.empty:
+        raise ValueError(f"No weights found for sector '{sector}'.")
+
+    return filtered
 
 def get_sector_for_ticker(ticker: str) -> str:
     """
@@ -149,7 +166,69 @@ def get_market_metrics(sector: str, year: int | None = None, file_path: str = 'f
             .reset_index()
         )
         return grouped
+
+def flatten_weights(weights: dict) -> dict:
+    """
+    Flattens sector weights.
+    Supports both grouped (by category) and flat dictionaries.
     
+    Example:
+        Input (grouped):
+        {
+            "Profitability & Margins": {"GrossMargin": 10, "OperatingMargin": 12},
+            "Return": {"ROA": 10, "ROE": 12}
+        }
+        
+        Output:
+        {
+            "GrossMargin": 10, "OperatingMargin": 12,
+            "ROA": 10, "ROE": 12
+        }
+    """
+    try:
+        flat = {}
+        for key, value in weights.items():
+            if isinstance(value, dict):  # category grouping
+                flat.update(value)
+            else:  # already flat
+                flat[key] = value
+        return flat
+    except Exception as e:
+        print(f"Error flattening weights: {e}")
+        return {}
+
+
+
+# def weights_to_df(sector_metric_weights: dict) -> pd.DataFrame:
+#     """
+#     Converts sector_metric_weights dictionary into a tidy DataFrame.
+
+#     Parameters:
+#         sector_metric_weights (dict): Dictionary of sectors and their metric weights.
+
+#     Returns:
+#         pd.DataFrame: DataFrame with columns [sector, metric, weight]
+#     """
+#     try:
+#         records = []
+#         for sector, metrics in sector_metric_weights.items():
+#             for metric, weight in metrics.items():
+#                 records.append({
+#                     "sector": sector,
+#                     "metric": metric,
+#                     "weight": weight
+#                 })
+#         return pd.DataFrame(records)
+#     except Exception as e:
+#         print(f"Error converting weights to DataFrame: {e}")
+#         return pd.DataFrame(columns=["sector", "metric", "weight"])
+
+# export_to_xlsx(
+#     weights_to_df(sector_metric_weights).pivot(index='sector', columns='metric', values='weight').reset_index(),
+#     'financialtools/data/weights.xlsx',
+#     'sheet1'
+# )
+
 # def preprocess_df(df, ticker):
 #     """
 #     Preprocesses the input DataFrame by:

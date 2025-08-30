@@ -1,4 +1,7 @@
 # config.py placeholder
+
+import pandas as pd
+
 grouped_weights = {
     "Profitability & Margins": {
         "GrossMargin": 8,
@@ -146,3 +149,9 @@ sector_metric_weights = {
         "CurrentRatio": 8, "FCFToRevenue": 10, "FCFYield": 10
     }
 }
+
+weights = (
+        pd.read_excel('financialtools/data/weights.xlsx')
+        .melt(id_vars=["sector"], var_name="metrics", value_name="Weight")
+    )
+
