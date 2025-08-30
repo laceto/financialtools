@@ -13,84 +13,35 @@ from openai import OpenAI
 from pprint import pprint
 from openai.lib._pydantic import to_strict_json_schema
 
+from financialtools.pydantic_models import StockRegimeAssessment
+from financialtools.prompts import system_prompt_StockRegimeAssessment
+from financialtools.wrappers import read_financial_results
+from financialtools.utils import dataframe_to_json
 
 load_dotenv()
 client = OpenAI()
 
-class StockRegimeAssessment(BaseModel):
-    ticker: str = Field(..., description="The ticker of the stock under analysis")
-    regime: Literal["bull", "bear"] = Field(
-        ..., description="The fundamental regime classification of the stock"
-    )
-    rationale: str = Field(
-        ..., description="Concise explanation justifying the regime classification based on the financial metrics, composite ratio and red flags"
-    )
-    metrics_movement: str = Field(
-        ..., description=(
-            "A summary description of how key financial metrics have moved across years, "
-            "e.g., 'GrossMargin increased steadily, DebtToEquity rose sharply, FCFYield remained stable.'"
-        )
-    )
-    non_aligned_findings: Optional[str] = Field(
-        None,
-        description=(
-            "Observations or signals that are not aligned with the overall metric trends, "
-            "such as contradictory indicators, anomalies, or important red flags."
-        )
-    )
 
-system_prompt_template = """
-You are a trader assistant specializing in fundamental analysis. 
 
-Based on the following financial data, provide a concise overall assessment that classifies 
-the stock’s current fundamental regime as one of:
-
-- bull: Strong and improving fundamentals supporting a positive outlook.
-- bear: Weak or deteriorating fundamentals indicating risk or decline.
-
-Financial data constists of financial metrics, composite score and red flags.
-
-Profitability and Margin Metrics:
-    -GrossMargin: gross profit / total revenue 
-    -OperatingMargin: operating income / total revenue
-    -NetProfitMargin: net income / total revenue
-    -EBITDAMargin: ebitda / total revenue
-Returns metrics:
-    -ROA: net income / total assets
-    -ROE: net income / total equity
-Cash Flow Strength metrics: 
-    -FCFToRevenue: free cash flow / total revenue
-    -FCFYield: free cash flow / market capitalization
-    -FCFToDebt:: free cash flow / total debt
-Leverage & Solvency metrics:
-    -DebtToEquity: total debt / total equity
-Liquidity metrics:
-    -CurrentRatio: working capital / total liabilities
-
-The composite score is a weighted average (1 to 5) that summarizes the company’s overall fundamental health.
-It reflects profitability, efficiency, leverage, liquidity, and cash flow strength, based on the above mentioned financial metrics.
-
-Range:
-1 = Weak fundamentals
-5 = Strong fundamentals
-
-Each metric is scored on a 1–5 scale and multiplied by its weight. The composite score is the sum of weighted scores divided by the total weight.
-
-A red flag is an early warning signal that highlights potential weaknesses in a company’s financial statements 
-or business quality. These warnings do not always mean immediate distress, but they indicate heightened risk that 
-traders should carefully consider before taking a position.
-
-"""
-
-tickers = get_ticker_list()
-# tickers = tickers[:1]
+tickers = get_tickers(columns='ticker').to_list()[:1]
 
 Structured_Response = to_strict_json_schema(StockRegimeAssessment)
+
+
 
 tasks = []
 for ticker in tickers:
     
-    metrics, composite_scores, red_flags = get_fin_data(ticker, 2024)
+    metrics, eval_metrics, composite_scores, red_flags = read_financial_results(
+        ticker=ticker,
+        # time=year,
+        input_dir='financial_data', 
+        sheet_name='sheet1')
+
+    metrics, eval_metrics, composite_scores, red_flags = [
+        dataframe_to_json(df)
+        for df in [metrics, eval_metrics, composite_scores, red_flags]
+    ]
 
     fina_data = f"Metrics:\n{metrics}\nComposite score:\n{composite_scores}\nRed flags:\n{red_flags}\n"
     
@@ -114,7 +65,7 @@ for ticker in tickers:
             "messages": [
                 {
                     "role": "system",
-                    "content": system_prompt_template
+                    "content": system_prompt_StockRegimeAssessment
                 },
                 {
                     "role": "user",
@@ -129,14 +80,14 @@ for ticker in tickers:
 
 # Creating the file
 
-file_name = "batch_tasks_tickers.jsonl"
+file_name = "batch_files/batch_tasks_tickers.jsonl"
 
 with open(file_name, 'w') as file:
     for obj in tasks:
         file.write(json.dumps(obj) + '\n')
 
 
-# # Uploading the file
+# Uploading the file
 batch_file = client.files.create(
   file=open(file_name, "rb"),
   purpose="batch"
@@ -144,11 +95,11 @@ batch_file = client.files.create(
 
 print(batch_file)
 
-# Creating the batch job
-batch_job = client.batches.create(
-  input_file_id=batch_file.id,
-  endpoint="/v1/chat/completions",
-  completion_window="24h"
-)
+# # Creating the batch job
+# batch_job = client.batches.create(
+#   input_file_id=batch_file.id,
+#   endpoint="/v1/chat/completions",
+#   completion_window="24h"
+# )
 
-print(batch_job)
+# print(batch_job)
