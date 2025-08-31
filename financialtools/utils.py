@@ -6,6 +6,7 @@ import numpy as np
 # from financialtools.processor import FundamentalTraderAssistant
 from financialtools.config import sector_metric_weights
 import json
+import time
 
 import polars as pl
 from typing import List, Union, Optional
@@ -197,6 +198,55 @@ def flatten_weights(weights: dict) -> dict:
         print(f"Error flattening weights: {e}")
         return {}
 
+
+
+
+def get_ticker_profile(ticker: str) -> pd.DataFrame:
+    """
+    Fetches key profile information for a given stock ticker from Yahoo Finance.
+
+    Parameters:
+    - ticker (str): The stock ticker symbol (e.g., 'FCT.MI').
+
+    Returns:
+    - pd.DataFrame: A single-row DataFrame with selected profile fields.
+    """
+    stock = yf.Ticker(ticker)
+    info = stock.info
+
+    data = {
+        "shortName": info.get("shortName"),
+        "industry": info.get("industry"),
+        "sectorKey": info.get("sectorKey"),
+        "beta": info.get("beta"),
+        "longBusinessSummary": info.get("longBusinessSummary")
+    }
+
+    return pd.DataFrame([data])
+
+
+def enrich_tickers(df: pd.DataFrame, ticker_column: str = "ticker") -> pd.DataFrame:
+    """
+    Applies get_ticker_profile to each ticker in the DataFrame and combines results.
+
+    Parameters:
+    - df (pd.DataFrame): Input DataFrame with a column of ticker symbols.
+    - ticker_column (str): Name of the column containing ticker symbols.
+
+    Returns:
+    - pd.DataFrame: Combined DataFrame with profile info for each ticker.
+    """
+    profiles = []
+    for ticker in df[ticker_column]:
+        try:
+            profile_df = get_ticker_profile(ticker)
+            profile_df["ticker"] = ticker  # Add ticker for traceability
+            profiles.append(profile_df)
+        except Exception as e:
+            print(f"Error fetching data for {ticker}: {e}")
+        time.sleep(0.5)  # Pause to avoid overwhelming the API
+
+    return pd.concat(profiles, ignore_index=True)
 
 
 # def weights_to_df(sector_metric_weights: dict) -> pd.DataFrame:
