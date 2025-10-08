@@ -16,9 +16,8 @@ with open('./financialtools/data/company_tickers.json') as f:
 tickers = pd.DataFrame.from_dict(data, orient='index').reset_index()
 tickers.drop(columns='index', inplace=True)
 tickers = tickers['ticker'].to_list()
-print(len(tickers))
 tickers_filtered = [t for t in tickers if t not in downloaded_tickers]
-print(len(tickers_filtered))
+# from financialtools.processor import Downloader, RateLimiter  # Assume the updated Downloader class is in downloader.py
 
 # tickers = tickers[:5]
 # from financialtools.processor import Downloader, RateLimiter  # Assume the updated Downloader class is in downloader.py

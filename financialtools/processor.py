@@ -204,26 +204,35 @@ class Downloader:
 
         for t in tickers:
             limiter.acquire()
-            d = cls.from_ticker(t)
+            try:
+                d = cls.from_ticker(t)
 
-            # --- Save financial tables as Parquet ---
-            tables = {
-                "merged_data": d.get_merged_data(),
-                "info": d.get_info_data()
-            }
+                tables = {
+                    "merged_data": d.get_merged_data(),
+                    "info": d.get_info_data()
+                }
 
-            for name, df in tables.items():
-                if df is not None and not df.empty:
-                    path = os.path.join(out_dir, f"{t}_{name}.parquet")
-                    df.to_parquet(path)
+                for name, df in tables.items():
+                    try:
+                        if df is not None and not df.empty:
+                            path = os.path.join(out_dir, f"{t}_{name}.parquet")
+                            df.to_parquet(path)
+                    except:
+                        pass  # silently skip file write errors
 
-            # --- Save info as JSON ---
-            # if d._info:
-            #     info_path = os.path.join(out_dir, f"{t}_info.json")
-            #     pd.Series(d._info).to_json(info_path, indent=2)
+                # Optional JSON save block
+                # try:
+                #     if d._info:
+                #         info_path = os.path.join(out_dir, f"{t}_info.json")
+                #         pd.Series(d._info).to_json(info_path, indent=2)
+                # except:
+                #     pass
 
-            print(f"Saved {t} data to {out_dir}")
-            yield d
+                print(f"Saved {t} data to {out_dir}")
+                yield d
+
+            except:
+                pass  # silently skip ticker-level errors
 
 
 
