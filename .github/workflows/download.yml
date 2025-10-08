@@ -6,6 +6,9 @@
 name: wf_down
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:  
