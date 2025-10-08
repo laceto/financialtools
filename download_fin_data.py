@@ -9,7 +9,7 @@ with open('./financialtools/data/company_tickers.json') as f:
 tickers = pd.DataFrame.from_dict(data, orient='index').reset_index()
 tickers.drop(columns='index', inplace=True)
 tickers = tickers['ticker'].to_list()
-tickers = tickers[:5]
+# tickers = tickers[:5]
 from financialtools.processor import Downloader, RateLimiter  # Assume the updated Downloader class is in downloader.py
 
 limiter = RateLimiter(per_minute=60, per_hour=360, per_day=8000)
