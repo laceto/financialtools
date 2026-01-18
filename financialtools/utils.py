@@ -372,30 +372,30 @@ def enrich_tickers(df: pd.DataFrame, ticker_column: str = "ticker") -> pd.DataFr
 
 #     return tickers
 
-# def get_fin_data(ticker, year=None):
-#     def load_and_filter(path, year_filter=False):
-#         df = pl.from_pandas(pd.read_excel(path)).filter(pl.col("ticker") == ticker)
-#         if year_filter and year is not None:
-#             df = df.filter(pl.col("time") == year)
-#         return df
+def get_fin_data(ticker, year=None):
+    def load_and_filter(path, year_filter=False):
+        df = pl.from_pandas(pd.read_excel(path)).filter(pl.col("ticker") == ticker)
+        if year_filter and year is not None:
+            df = df.filter(pl.col("time") == year)
+        return df
 
-#     # Metrics
-#     metrics_df = load_and_filter('financialtools/data/metrics.xlsx', year_filter=True).to_pandas()
-#     metrics_df = metrics_df.round(2)
-#     metrics = json.dumps(metrics_df.to_dict())
+    # Metrics
+    metrics_df = load_and_filter('financialtools/data/metrics.xlsx', year_filter=True).to_pandas()
+    # metrics_df = metrics_df.round(2)
+    metrics = json.dumps(metrics_df.to_dict())
 
-#     # Composite Scores
-#     composite_df = load_and_filter('financialtools/data/composite_scores.xlsx', year_filter=True).to_pandas()
-#     composite_scores = json.dumps(composite_df.to_dict())
+    # Composite Scores
+    composite_df = load_and_filter('financialtools/data/composite_scores.xlsx', year_filter=True).to_pandas()
+    composite_scores = json.dumps(composite_df.to_dict())
 
-#     # Red Flags
-#     red_flags_df = pl.concat([
-#         load_and_filter('financialtools/data/red_flags.xlsx', year_filter=True),
-#         load_and_filter('financialtools/data/raw_red_flags.xlsx', year_filter=True)
-#     ]).to_pandas()
-#     red_flags = json.dumps(red_flags_df.to_dict())
+    # Red Flags
+    red_flags_df = pl.concat([
+        load_and_filter('financialtools/data/red_flags.xlsx', year_filter=True),
+        load_and_filter('financialtools/data/raw_red_flags.xlsx', year_filter=True)
+    ]).to_pandas()
+    red_flags = json.dumps(red_flags_df.to_dict())
 
-#     return metrics, composite_scores, red_flags
+    return metrics, composite_scores, red_flags
 
 
 def get_fin_data_year(ticker, year):
