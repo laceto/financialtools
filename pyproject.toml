@@ -14,3 +14,11 @@ dependencies = [
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Explicitly include only your package folder
+packages = ["financialtools"]
+
+[tool.setuptools.package-data]
+# If you have specific non-python files inside 'financialtools' to include
+# "*" = ["*.json", "*.txt"]
