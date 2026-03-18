@@ -1,15 +1,17 @@
-# utils.py placeholder
+import os
+import json
+import logging
+import time
+from typing import List, Union, Optional
 
 import pandas as pd
 import polars as pl
 import numpy as np
+from financialtools.exceptions import SectorNotFoundError
 # from financialtools.processor import FundamentalTraderAssistant
 from financialtools.config import sector_metric_weights
-import json
-import time
 
-import polars as pl
-from typing import List, Union, Optional
+_logger = logging.getLogger(__name__)
 
 def export_to_csv(df, path):
         """Public method to export merged data to CSV."""
@@ -20,13 +22,13 @@ def export_to_csv(df, path):
             print(f"Error exporting to CSV: {e}")
             
 def export_to_xlsx(df, path, sheet_name):
-        """Public method to export merged data to CSV."""
+        """Export a DataFrame to an Excel (.xlsx) file."""
         try:
             with pd.ExcelWriter(path, engine="openpyxl") as writer:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
             print(f"Data exported to {path}")
         except Exception as e:
-            print(f"Error exporting to CSV: {e}")
+            print(f"Error exporting to Excel: {e}")
 
 def get_tickers(
     filepath: str = "financialtools/data/sector_ticker.txt", 
@@ -90,30 +92,6 @@ def dataframe_to_json(df):
     return json_str
 
 
-def get_sector_weights(sector: str) -> dict:
-    """
-    Loads sector weights from an Excel file and returns them as a dictionary
-    for the specified sector.
-
-    Parameters:
-    - sector (str): The sector to filter by.
-
-    Returns:
-    - df: Dataframe weights.
-    """
-    df = (
-        pd.read_excel('financialtools/data/weights.xlsx')
-        .melt(id_vars=["sector"], var_name="metrics", value_name="Weight")
-    )
-
-    filtered = df[df["sector"] == sector]
-    filtered = filtered[["metrics", "Weight"]]
-
-    if filtered.empty:
-        raise ValueError(f"No weights found for sector '{sector}'.")
-
-    return filtered
-
 def get_sector_for_ticker(ticker: str) -> str:
     """
     Returns the sector for a given ticker symbol.
@@ -128,7 +106,7 @@ def get_sector_for_ticker(ticker: str) -> str:
     result = tickers_sector.filter(pl.col('ticker') == ticker).select('sector').to_series().to_list()
 
     if not result:
-        raise ValueError(f"Ticker '{ticker}' not found.")
+        raise SectorNotFoundError(f"Ticker '{ticker}' not found in sector mapping.")
 
     sector = result[0]
 
@@ -152,12 +130,12 @@ def get_market_metrics(sector: str, year: int | None = None, file_path: str = 'f
     sector_df = df.query("sector == @sector")
 
     if sector_df.empty:
-        raise ValueError(f"No data found for sector '{sector}'.")
+        raise SectorNotFoundError(f"No data found for sector '{sector}'.")
 
     if year is not None:
         filtered_df = sector_df.query("time == @year")
         if filtered_df.empty:
-            raise ValueError(f"No data found for sector '{sector}' in year {year}.")
+            raise SectorNotFoundError(f"No data found for sector '{sector}' in year {year}.")
         return filtered_df[["sector", "metrics", "market_value", "time"]]
     else:
         grouped = (
@@ -211,6 +189,7 @@ def get_ticker_profile(ticker: str) -> pd.DataFrame:
     Returns:
     - pd.DataFrame: A single-row DataFrame with selected profile fields.
     """
+    import yfinance as yf  # deferred: yfinance is only required for this function
     stock = yf.Ticker(ticker)
     info = stock.info
 
@@ -249,194 +228,93 @@ def enrich_tickers(df: pd.DataFrame, ticker_column: str = "ticker") -> pd.DataFr
     return pd.concat(profiles, ignore_index=True)
 
 
-# def weights_to_df(sector_metric_weights: dict) -> pd.DataFrame:
-#     """
-#     Converts sector_metric_weights dictionary into a tidy DataFrame.
+def get_fin_data(
+    ticker: str,
+    year: int | None = None,
+    base_dir: str = 'financial_data',
+    round_metrics: bool = False,
+) -> tuple:
+    """
+    Load financial data for a ticker from Excel files and return as JSON strings.
 
-#     Parameters:
-#         sector_metric_weights (dict): Dictionary of sectors and their metric weights.
+    Args:
+        ticker: Ticker symbol to filter by.
+        year: If provided, filter metrics and red flags to this year only.
+              Composite scores are always returned without year filtering
+              (they aggregate across all years for trend visibility).
+        base_dir: Directory containing the Excel files. Defaults to 'financial_data'
+                  (runtime output dir). Use 'financialtools/data' for package data.
+        round_metrics: If True, round metric values to 2 decimal places.
 
-#     Returns:
-#         pd.DataFrame: DataFrame with columns [sector, metric, weight]
-#     """
-#     try:
-#         records = []
-#         for sector, metrics in sector_metric_weights.items():
-#             for metric, weight in metrics.items():
-#                 records.append({
-#                     "sector": sector,
-#                     "metric": metric,
-#                     "weight": weight
-#                 })
-#         return pd.DataFrame(records)
-#     except Exception as e:
-#         print(f"Error converting weights to DataFrame: {e}")
-#         return pd.DataFrame(columns=["sector", "metric", "weight"])
+    Returns:
+        Tuple of (metrics_json, composite_scores_json, red_flags_json).
+    """
+    import os
 
-# export_to_xlsx(
-#     weights_to_df(sector_metric_weights).pivot(index='sector', columns='metric', values='weight').reset_index(),
-#     'financialtools/data/weights.xlsx',
-#     'sheet1'
-# )
-
-# def preprocess_df(df, ticker):
-#     """
-#     Preprocesses the input DataFrame by:
-#     - Filtering rows for the specified ticker
-#     - Extracting the year from the 'time' column
-#     - Reordering columns to place 'time' last
-
-#     Parameters:
-#         df (pd.DataFrame): Original DataFrame
-#         ticker (str): Ticker symbol to filter by
-
-#     Returns:
-#         pd.DataFrame: Preprocessed DataFrame
-#     """
-#     try:
-#         return (
-#             pl.from_pandas(df)
-#             .filter(pl.col("ticker") == ticker)
-#             .with_columns(pl.col("time").dt.year().alias("time"))
-#             .select([col for col in df.columns if col != "time"] + ["time"])
-#             .to_pandas()
-#         )
-#     except Exception as e:
-#         print(f"Error preprocessing data for ticker {ticker}: {e}")
-#         return pd.DataFrame()  # Return empty DataFrame on failure
-
-# def get_fundamental_output(df, ticker, weights):
-#     """
-#     Evaluates fundamental metrics for a given ticker using the FundamentalTraderAssistant.
-
-#     Parameters:
-#         df (pd.DataFrame): Original DataFrame
-#         ticker (str): Ticker symbol to evaluate
-#         weights (dict): Grouped weights for evaluation
-
-#     Returns:
-#         dict: Dictionary containing evaluation results
-#     """
-#     try:
-#         # processed_df = preprocess_df(df, ticker)
-#         processed_df = df[df['ticker'] == ticker]
-#         print(processed_df)
-#         if processed_df.empty:
-#             raise ValueError("Processed DataFrame is empty.")
-#         assistant = FundamentalTraderAssistant(data=processed_df, weights=weights)
-#         return assistant.evaluate()
-#     except Exception as e:
-#         print(f"Error evaluating ticker {ticker}: {e}")
-#         return {
-#             'metrics': pd.DataFrame(),
-#             'eval_metrics': pd.DataFrame(),
-#             'composite_scores': pd.DataFrame(),
-#             'red_flags': pd.DataFrame(),
-#             'raw_red_flags': pd.DataFrame()
-#         }
-
-# def merge_results(results, key):
-#     """
-#     Merges a specific key from multiple result dictionaries into a single DataFrame.
-
-#     Parameters:
-#         results (list): List of result dictionaries
-#         key (str): Key to extract and merge
-
-#     Returns:
-#         pd.DataFrame: Concatenated DataFrame for the specified key
-#     """
-#     try:
-#         return pd.concat([result.get(key) for result in results], ignore_index=True)
-#     except Exception as e:
-#         print(f"Error merging results for key '{key}': {e}")
-#         return pd.DataFrame()
-
-# def get_ticker_list():
-
-#     df = pd.read_excel('financialtools/data/metrics.xlsx')
-#     df.columns = df.columns.str.lower().str.replace(" ", "_")
-
-#     # Get unique tickers
-#     try:
-#         tickers = (
-#             pl.from_pandas(df)
-#             .select("ticker")
-#             .unique()
-#             .get_column("ticker")
-#             .to_list()
-#         )
-#     except Exception as e:
-#         print(f"Error extracting tickers: {e}")
-#         tickers = []
-
-#     return tickers
-
-def get_fin_data(ticker, year=None):
-    def load_and_filter(path, year_filter=False):
+    def _load(filename: str, year_filter: bool = False) -> pl.DataFrame:
+        path = os.path.join(base_dir, filename)
         df = pl.from_pandas(pd.read_excel(path)).filter(pl.col("ticker") == ticker)
         if year_filter and year is not None:
             df = df.filter(pl.col("time") == year)
         return df
 
-    # Metrics
-    metrics_df = load_and_filter('financialtools/data/metrics.xlsx', year_filter=True).to_pandas()
-    # metrics_df = metrics_df.round(2)
+    metrics_df = _load('metrics.xlsx', year_filter=True).to_pandas()
+    if round_metrics:
+        metrics_df = metrics_df.round(2)
     metrics = json.dumps(metrics_df.to_dict())
 
-    # Composite Scores
-    composite_df = load_and_filter('financialtools/data/composite_scores.xlsx', year_filter=True).to_pandas()
+    # Composite scores: no year filter — callers typically want the full trend.
+    composite_df = _load('composite_scores.xlsx', year_filter=False).to_pandas()
     composite_scores = json.dumps(composite_df.to_dict())
 
-    # Red Flags
     red_flags_df = pl.concat([
-        load_and_filter('financialtools/data/red_flags.xlsx', year_filter=True),
-        load_and_filter('financialtools/data/raw_red_flags.xlsx', year_filter=True)
+        _load('red_flags.xlsx', year_filter=True),
+        _load('raw_red_flags.xlsx', year_filter=True),
     ]).to_pandas()
     red_flags = json.dumps(red_flags_df.to_dict())
 
     return metrics, composite_scores, red_flags
 
 
-def get_fin_data_year(ticker, year):
-    # print(ticker)
-    metrics = (pl.from_pandas(pd.read_excel('financial_data/metrics.xlsx'))
-        .filter(pl.col("ticker") == ticker)
-        .filter(pl.col("time") == year)
-        .to_pandas())
-    metrics = metrics.round(2)
-    metrics = metrics.to_dict()
-    metrics = json.dumps(metrics)
+def get_fin_data_year(ticker: str, year: int) -> tuple:
+    """Backward-compatible alias for get_fin_data with runtime output dir and rounded metrics."""
+    return get_fin_data(ticker, year=year, base_dir='financial_data', round_metrics=True)
 
 
-    composite_scores = (pl.from_pandas(pd.read_excel('financial_data/composite_scores.xlsx'))
-        .filter(pl.col("ticker") == ticker)
-        .to_pandas())
-    composite_scores = composite_scores.to_dict()
-    composite_scores = json.dumps(composite_scores)
+def list_evaluated_tickers(base_dir: str = "financial_data") -> list[str]:
+    """
+    Return a sorted list of tickers present in composite_scores.xlsx.
 
+    This is the canonical way for tools and agents to discover which tickers
+    have been evaluated and are ready for analysis.
 
-    red_flags = pl.concat([
-        (pl.from_pandas(pd.read_excel('financial_data/red_flags.xlsx'))
-            .filter(pl.col("ticker") == ticker)
-            .filter(pl.col("time") == year)
-            ),
-        (pl.from_pandas(pd.read_excel('financial_data/raw_red_flags.xlsx'))
-            .filter(pl.col("ticker") == ticker)
-            .filter(pl.col("time") == year)
-            )]
-    ).to_pandas()
-    red_flags = red_flags.to_dict()
-    red_flags = json.dumps(red_flags)
+    Args:
+        base_dir: Directory containing the Excel output files.
+                  Defaults to 'financial_data' (runtime output dir).
 
-    return metrics, composite_scores, red_flags
+    Returns:
+        Sorted list of ticker strings. Returns [] on any I/O or parsing failure.
+    """
+    try:
+        path = os.path.join(base_dir, "composite_scores.xlsx")
+        df = pd.read_excel(path, sheet_name="sheet1")
+        return sorted(df["ticker"].dropna().unique().tolist())
+    except Exception as exc:
+        _logger.warning(
+            f"list_evaluated_tickers: could not read {base_dir}/composite_scores.xlsx — {exc}"
+        )
+        return []
 
-
-import os
 
 def create_newbatch_folder(file_name, batch_job_id):
-    batch_files_folder = 'batch_files/'
-    batch_files_folder_task = str(batch_files_folder)+str(batch_job_id)
+    """
+    Move `file_name` into a per-job subfolder of batch_files/.
+
+    Note: `batch_files/` is resolved relative to the caller's working directory.
+    Pass an absolute path for `file_name` to avoid cwd-dependent behaviour.
+    """
+    batch_files_folder = 'batch_files'
+    batch_files_folder_task = os.path.join(batch_files_folder, str(batch_job_id))
     os.makedirs(batch_files_folder_task, exist_ok=True)
-    new_name = batch_files_folder_task+str('/')+str('input.jsonl')
+    new_name = os.path.join(batch_files_folder_task, 'input.jsonl')
     os.rename(file_name, new_name)

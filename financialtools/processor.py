@@ -3,23 +3,71 @@ import os
 import pandas as pd
 from time import sleep
 from typing import Dict, Any, List
+from financialtools.exceptions import EvaluationError
 import numpy as np
+import logging as _logging
+
+# Module-level logger — defined here (before all class bodies) so every method
+# can reference _logger at call time without an ordering hazard.
+_logger = _logging.getLogger(__name__)
+
 
 class RateLimiter:
+    """
+    Token-bucket style rate limiter with sliding-window guards.
+
+    Thread-safe: all state mutations are protected by a threading.Lock.
+    acquire() is safe to call from multiple threads sharing one instance.
+
+    Limits:
+      per_minute  — max calls within any 60-second window
+      per_hour    — max calls within any 3600-second window
+      per_day     — max calls within any 86400-second window
+
+    acquire() sleeps until all three windows have a free slot, then records
+    the call timestamp.
+    """
+
     def __init__(self, per_minute=60, per_hour=360, per_day=8000):
+        import threading
         self.per_minute = per_minute
         self.per_hour = per_hour
         self.per_day = per_day
         self.calls = []
-    
+        self._lock = threading.Lock()
+
     def acquire(self):
+        """
+        Block until a call is permissible under all three rate limits.
+
+        Uses sliding-window checks. Refreshes timestamps after each sleep so
+        stale-now values do not cause limit overruns. All state access is
+        protected by self._lock.
+        """
         import time
-        now = time.time()
-        self.calls = [t for t in self.calls if now - t < 86400]
-        if len(self.calls) >= self.per_day:
-            sleep(3600)
-        self.calls.append(now)
-        sleep(1.0 / self.per_minute)  # basic throttle
+        with self._lock:
+            while True:
+                now = time.time()
+                # Prune calls older than 24 h to bound list growth.
+                self.calls = [t for t in self.calls if now - t < 86400]
+
+                calls_last_minute = [t for t in self.calls if now - t < 60]
+                calls_last_hour   = [t for t in self.calls if now - t < 3600]
+
+                wait = 0.0
+                if len(calls_last_minute) >= self.per_minute and calls_last_minute:
+                    wait = max(wait, 60 - (now - calls_last_minute[0]))
+                if len(calls_last_hour) >= self.per_hour and calls_last_hour:
+                    wait = max(wait, 3600 - (now - calls_last_hour[0]))
+                if len(self.calls) >= self.per_day and self.calls:
+                    wait = max(wait, 86400 - (now - self.calls[0]))
+
+                if wait <= 0.0:
+                    break  # all limits satisfied — proceed
+                sleep(max(0.0, wait))
+                # Re-enter loop to recompute with fresh timestamps after sleep.
+
+            self.calls.append(time.time())
 
 
 class Downloader:
@@ -30,16 +78,6 @@ class Downloader:
         self._cashflow = None
         self._info = None
 
-    # @classmethod
-    # def from_ticker(cls, ticker):
-    #     t = yf.Ticker(ticker)
-    #     d = cls(ticker)
-    #     d._balance_sheet = t.balance_sheet
-    #     d._income_stmt = t.income_stmt
-    #     d._cashflow = t.cashflow
-    #     d._info = t.info
-    #     return d
-    
     @classmethod
     def from_ticker(cls, ticker):
         """Download and reshape all financial data for one ticker."""
@@ -72,7 +110,7 @@ class Downloader:
             return d
 
         except Exception as e:
-            print(f"Failed to download {ticker}: {e}")
+            _logger.error(f"[{ticker}] from_ticker failed: {e}", exc_info=True)
             return cls(ticker)
             
     # @staticmethod
@@ -85,6 +123,7 @@ class Downloader:
     #     return df
 
 
+    @staticmethod
     def __reshape_fin_data(df: pd.DataFrame) -> pd.DataFrame:
         """
         Reshape financial data DataFrame to have 'ticker', 'time', and metric columns.
@@ -118,7 +157,7 @@ class Downloader:
         Returns:
             pd.DataFrame with filtered stock info (e.g., marketCap, forwardPE) or empty DataFrame if unavailable.
         """
-        if self._info.empty:
+        if self._info is None or self._info.empty:
             return pd.DataFrame()
         return self._info
     
@@ -144,6 +183,7 @@ class Downloader:
             return merged
 
         except Exception as e:
+            _logger.error(f"[{self.ticker}] get_merged_data failed: {e}", exc_info=True)
             return pd.DataFrame()
 
     @classmethod
@@ -168,9 +208,11 @@ class Downloader:
             return combined
 
         except Exception as e:
+            tickers = [d.ticker for d in downloaders]
+            _logger.error(f"combine_merged_data failed for {tickers}: {e}", exc_info=True)
             return pd.DataFrame()
 
-        
+
     @classmethod
     def combine_info_data(cls, downloaders: List['Downloader']) -> pd.DataFrame:
         """
@@ -193,6 +235,8 @@ class Downloader:
             return combined
 
         except Exception as e:
+            tickers = [d.ticker for d in downloaders]
+            _logger.error(f"combine_info_data failed for {tickers}: {e}", exc_info=True)
             return pd.DataFrame()
 
     @classmethod
@@ -218,8 +262,8 @@ class Downloader:
                         if df is not None and not df.empty:
                             path = os.path.join(out_dir, f"{t}_{name}.parquet")
                             df.to_parquet(path)
-                    except:
-                        pass  # silently skip file write errors
+                    except Exception as e:
+                        _logger.error(f"[{t}] Parquet write failed for '{name}': {e}")
 
                 # Optional JSON save block
                 # try:
@@ -232,10 +276,41 @@ class Downloader:
                 print(f"Saved {t} data to {out_dir}")
                 yield d
 
-            except:
-                pass  # silently skip ticker-level errors
+            except Exception as e:
+                _logger.error(f"[{t}] Download failed: {e}", exc_info=True)
 
 
+
+
+# Canonical empty result shape for evaluate() — all keys always present.
+# Invariant: every key in the success return of evaluate() must appear here.
+# IMPORTANT: Always return via _empty_result() — never _EMPTY_RESULT.copy(),
+# which is a shallow copy and shares DataFrame objects across calls.
+_EMPTY_RESULT_KEYS = ("metrics", "eval_metrics", "composite_scores", "raw_red_flags", "red_flags")
+
+
+def _empty_result() -> dict:
+    """Return a fresh dict of empty DataFrames with the canonical evaluate() shape."""
+    return {k: pd.DataFrame() for k in _EMPTY_RESULT_KEYS}
+
+
+# Reference list of metric column names produced by compute_metrics().
+# Used as documentation and for score_metric() threshold key alignment.
+# evaluate() and compute_scores() derive value_vars dynamically from compute_metrics()
+# output columns so that adding a new metric to compute_metrics() is automatically scored.
+SCORED_METRICS: list = [
+    "GrossMargin",
+    "OperatingMargin",
+    "NetProfitMargin",
+    "EBITDAMargin",
+    "ROA",
+    "ROE",
+    "FCFToRevenue",
+    "FCFYield",
+    "FCFtoDebt",
+    "DebtToEquity",
+    "CurrentRatio",
+]
 
 
 class FundamentalTraderAssistant:
@@ -246,12 +321,41 @@ class FundamentalTraderAssistant:
 
     def __init__(self, data: pd.DataFrame, weights: pd.DataFrame):
         self.d = data
-        self.metrics = {}
-        self.eval_metrics = {}
-        self.scores = {}
+        self.metrics = pd.DataFrame()
+        self.eval_metrics = pd.DataFrame()
+        # Two distinct score attributes with different schemas — do NOT conflate:
+        #   self.metric_scores  — long format, one row per (ticker, time, metric)
+        #                         set by compute_scores()
+        #   self.scores         — wide format, one row per (ticker, time)
+        #                         with composite_score, set by evaluate()
+        self.metric_scores = pd.DataFrame()
+        self.scores = pd.DataFrame()
         self.weights = weights
-        self.ticker = data['ticker'].unique()[0]
-        self.sector = weights['sector'].unique()[0]
+        # Validate: exactly one non-null ticker — fail fast with a clear message.
+        tickers = data['ticker'].dropna().unique()
+        if len(tickers) == 0:
+            raise EvaluationError(
+                "data DataFrame has no valid ticker values (empty or all-NaN ticker column)"
+            )
+        if len(tickers) > 1:
+            raise EvaluationError(
+                f"data contains multiple tickers {sorted(tickers.tolist())} — "
+                "filter to a single ticker before calling FundamentalTraderAssistant"
+            )
+        self.ticker = tickers[0]
+
+        # Validate: exactly one non-null sector in weights.
+        sectors = weights['sector'].dropna().unique()
+        if len(sectors) == 0:
+            raise EvaluationError(
+                "weights DataFrame has no valid sector values (empty or all-NaN sector column)"
+            )
+        if len(sectors) > 1:
+            raise EvaluationError(
+                f"weights contains multiple sectors {sorted(sectors.tolist())} — "
+                "pass weights for a single sector"
+            )
+        self.sector = sectors[0]
         # self.weights = get_sector_weights(self.sector)
 
 
@@ -259,13 +363,12 @@ class FundamentalTraderAssistant:
         try:
             return np.where((den != 0) & (den.notna()) & (num.notna()), num / den, np.nan)
         except Exception as e:
-            print(f"Error in safe_div: {e}")
+            _logger.error(f"[{self.ticker}] safe_div failed: {e}", exc_info=True)
             return pd.Series([np.nan] * len(num))
 
     def compute_valuation_metrics(self):
         try:
             d = self.d.copy()
-
             # valuation
             d['bvps'] = d["common_stock_equity"] / d['sharesoutstanding']
             d['fcf_per_share'] = self.safe_div(d["free_cash_flow"], d["sharesoutstanding"])
@@ -285,9 +388,9 @@ class FundamentalTraderAssistant:
             self.eval_metrics = d
             return d
         except Exception as e:
-            print(f"Error in compute_metrics: {e}")
+            _logger.error(f"[{self.ticker}] compute_valuation_metrics failed: {e}", exc_info=True)
             return pd.DataFrame()
-        
+
     def compute_metrics(self):
         try:
             d = self.d.copy()
@@ -320,13 +423,16 @@ class FundamentalTraderAssistant:
             self.metrics = d
             return d
         except Exception as e:
-            print(f"Error in compute_metrics: {e}")
+            _logger.error(f"[{self.ticker}] compute_metrics failed: {e}", exc_info=True)
             return pd.DataFrame()
 
     def score_metric(self, df):
         """
         Apply trader-friendly scoring rules to a DataFrame with 'metrics' and 'value' columns.
+
+        Returns a new DataFrame — does not mutate the input.
         """
+        df = df.copy()
         thresholds = {
             "GrossMargin": [0.2, 0.3, 0.4, 0.5],
             "OperatingMargin": [0.05, 0.1, 0.15, 0.2],
@@ -366,15 +472,23 @@ class FundamentalTraderAssistant:
             if self.metrics is None or self.metrics.empty:
                 self.compute_metrics()
 
-            df = self.metrics.melt(id_vars=["ticker", "time"], var_name="metrics", value_name="value")
+            # Derive scored columns dynamically from compute_metrics() output.
+            # All columns except the identity variables are metric columns.
+            _id_vars = {"ticker", "time", "sector"}
+            scored_cols = [c for c in self.metrics.columns if c not in _id_vars]
+            df = self.metrics.melt(
+                id_vars=["ticker", "time"],
+                value_vars=scored_cols,
+                var_name="metrics",
+                value_name="value"
+            )
             scored = self.score_metric(df)
-            # Add category column
-            # scored["category"] = scored["metrics"].apply(self.get_metric_category)
             scored['sector'] = self.sector
-            self.scores = scored
+            # Store in metric_scores (long, per-metric) — NOT self.scores (composite).
+            self.metric_scores = scored
             return scored
         except Exception as e:
-            print(f"Error in compute_scores: {e}")
+            _logger.error(f"[{self.ticker}] compute_scores failed: {e}", exc_info=True)
             return pd.DataFrame()
 
     def raw_red_flags(self):
@@ -399,12 +513,15 @@ class FundamentalTraderAssistant:
 
             return d[d["red_flag"].notna()]
         except Exception as e:
-            print(f"Error in raw_red_flags: {e}")
+            _logger.error(f"[{self.ticker}] raw_red_flags failed: {e}", exc_info=True)
             return pd.DataFrame()
 
     def metrics_red_flags(self, df):
-        """Add red flag names to a long-format DataFrame with 'metrics' and 'value' columns."""
+        """Add red flag names to a long-format DataFrame with 'metrics' and 'value' columns.
 
+        Returns a new DataFrame — does not mutate the input.
+        """
+        df = df.copy()
         # Step 1: Apply single-metric red flags
         def single_metric_flag(row):
             metric, value = row["metrics"], row["value"]
@@ -431,18 +548,41 @@ class FundamentalTraderAssistant:
         df = df[df["red_flag"].notna()].reset_index(drop=True)
 
         return df
-        
+
+    @staticmethod
+    def _compute_composite_scores(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute per-ticker-per-year composite scores from a scored+weighted metrics DataFrame.
+
+        Input columns required: ticker, time, sector, score, weights
+        Output columns: sector, ticker, time, composite_score
+
+        Formula: composite_score = sum(score * weights) / sum(weights)
+        Invariant: weights come from sector_metric_weights via the self.weights merge in evaluate().
+        """
+        df = df.copy()
+        df["weighted_score"] = df["score"] * df["weights"]
+        composite = (
+            df.groupby(["ticker", "time", "sector"], as_index=False)
+            .agg(
+                total_weighted_score=("weighted_score", "sum"),
+                total_weight=("weights", "sum"),
+            )
+        )
+        composite["composite_score"] = composite["total_weighted_score"] / composite["total_weight"]
+        return composite[["sector", "ticker", "time", "composite_score"]]
+
     def evaluate(self):
         """
         Evaluate financial metrics, compute scores, detect red flags, and return a summary.
 
         Returns:
-        - dict: {
+        - dict with keys matching _EMPTY_RESULT_KEYS:
             "metrics": pd.DataFrame,
+            "eval_metrics": pd.DataFrame,
             "composite_scores": pd.DataFrame,
             "raw_red_flags": pd.DataFrame,
             "red_flags": pd.DataFrame
-        }
         """
         try:
             # Step 1: Compute metrics
@@ -452,10 +592,15 @@ class FundamentalTraderAssistant:
             # Step 2: Detect raw red flags (custom logic, if defined elsewhere)
             d = self.raw_red_flags()
 
-            # Step 3: Reshape metrics for scoring and flagging
+            # Step 3: Reshape metrics for scoring and flagging.
+            # Derive scored columns dynamically — keeps in sync with compute_metrics()
+            # without a hardcoded list. Any column that is not an identity variable is
+            # treated as a scored metric.
+            _id_vars = {"ticker", "time", "sector"}
+            scored_cols = [c for c in m.columns if c not in _id_vars]
             m_long = m.melt(
                 id_vars=["ticker", "time"],
-                value_vars=m.loc[:, "GrossMargin":"CurrentRatio"].columns,
+                value_vars=scored_cols,
                 var_name="metrics",
                 value_name="value"
             )
@@ -464,25 +609,16 @@ class FundamentalTraderAssistant:
             s = self.score_metric(m_long)
 
             # Step 5: Merge weights
-            # weights = pd.DataFrame(list(self.weights.items()), columns=["metrics", "Weight"])
-
-            # weights = self.weightscompute_composite_scores
             s = s.merge(self.weights, how="left", on="metrics")
-
-            # Step 6: Compute composite scores
-            def compute_composite_scores(df: pd.DataFrame) -> pd.DataFrame:
-                df["weighted_score"] = df["score"] * df["weights"]
-                composite = (
-                    df.groupby(["ticker", "time", "sector"], as_index=False)
-                    .agg(
-                        total_weighted_score=("weighted_score", "sum"),
-                        total_weight=("weights", "sum")
-                    )
+            missing_weights = s[s["weights"].isna()]["metrics"].unique().tolist()
+            if missing_weights:
+                _logger.warning(
+                    f"[{self.ticker}] Metrics missing weights after merge: {missing_weights}. "
+                    "These metrics will be excluded from the composite score."
                 )
-                composite["composite_score"] = composite["total_weighted_score"] / composite["total_weight"]
-                return composite[["sector","ticker", "time", "composite_score"]]
 
-            self.scores = compute_composite_scores(s)
+            # Step 6: Compute composite scores via the shared static method.
+            self.scores = self._compute_composite_scores(s)
 
             # Step 7: Detect red flags
             rf = self.metrics_red_flags(m_long)
@@ -498,10 +634,5 @@ class FundamentalTraderAssistant:
             }
 
         except Exception as e:
-            print(f"Error in evaluate: {e}")
-            return {
-                "metrics": pd.DataFrame(),
-                "composite_scores": pd.DataFrame(),
-                "raw_red_flags": pd.DataFrame(),
-                "red_flags": pd.DataFrame(),
-            }
+            _logger.error(f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}", exc_info=True)
+            return _empty_result()

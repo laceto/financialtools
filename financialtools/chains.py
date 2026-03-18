@@ -1,5 +1,4 @@
-import rich
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -53,6 +52,11 @@ def get_stock_evaluation_report(ticker, year=None):
 
     # Create a ChatPromptTemplate with system message and user input
 
+    # TODO: system_prompt_StockRegimeAssessment has no {format_instructions} placeholder,
+    # so this .format() is a no-op and format_instructions is silently discarded.
+    # The OutputFixingParser provides a recovery path, but structured-output instructions
+    # never reach the LLM. Fix: add {format_instructions} to build_prompt() in prompts.py,
+    # but validate LLM output behavior before changing to avoid regressions.
     system_prompt_filled = system_prompt_StockRegimeAssessment.format(format_instructions=format_instructions)
 
     prompt = ChatPromptTemplate.from_messages([

@@ -4,11 +4,18 @@ import polars as pl
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from financialtools.utils import export_to_xlsx
-from financialtools.processor import Downloader, FundamentalTraderAssistant
+from financialtools.processor import Downloader, FundamentalTraderAssistant, _empty_result
 
 
 import logging
 import traceback
+
+# Log directory is anchored to the package root, not the caller's cwd.
+# This ensures log files always land in <repo_root>/logs/ regardless of where
+# the module is imported from (tests/, notebooks/, scripts/, CI, etc.).
+import os as _os
+_LOGS_DIR = _os.path.join(_os.path.dirname(__file__), '..', 'logs')
+_os.makedirs(_LOGS_DIR, exist_ok=True)
 
 # Create logger
 logger = logging.getLogger('TickerDownloader')
@@ -18,17 +25,17 @@ logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 # Info handler
-info_handler = logging.FileHandler('logs/info.log')
+info_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'info.log'))
 info_handler.setLevel(logging.INFO)
 info_handler.setFormatter(formatter)
 
 # Error handler
-error_handler = logging.FileHandler('logs/error.log')
+error_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'error.log'))
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(formatter)
 
 # Debug handler
-debug_handler = logging.FileHandler('logs/debug.log')
+debug_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'debug.log'))
 debug_handler.setLevel(logging.DEBUG)
 debug_handler.setFormatter(formatter)
 
@@ -170,22 +177,18 @@ class FundamentalEvaluator:
             return assistant.evaluate()
 
         except Exception as e:
-            print(f"Error evaluating ticker '{ticker}': {e}")
-            return {
-                "metrics": pd.DataFrame(),
-                "eval_metrics": pd.DataFrame(),
-                "composite_scores": pd.DataFrame(),
-                "red_flags": pd.DataFrame(),
-                "raw_red_flags": pd.DataFrame(),
-            }
+            logger.error(f"[{ticker}] evaluate_single failed: {e}", exc_info=True)
+            return _empty_result()  # single source of truth from processor.py
 
-    def evaluate_multiple(self, tickers: list, parallel: bool = True) -> dict:
+    def evaluate_multiple(self, tickers: list, parallel: bool = True, max_workers: int = 5) -> dict:
         """
         Evaluate fundamentals for multiple tickers.
 
         Parameters:
             tickers (list): List of ticker symbols.
             parallel (bool): Run evaluations in parallel (default=True).
+            max_workers (int): Thread pool size for parallel runs (default=5).
+                Keep this low — each thread makes network calls to yfinance.
 
         Returns:
             dict: Results for all tickers keyed by ticker.
@@ -193,7 +196,7 @@ class FundamentalEvaluator:
         results = {}
 
         if parallel:
-            with ThreadPoolExecutor() as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(self.evaluate_single, t): t for t in tickers}
                 for future in as_completed(futures):
                     ticker = futures[future]
@@ -271,7 +274,8 @@ def read_financial_results(ticker=None, time=None, input_dir="financial_data", s
     Optionally filters each DataFrame by ticker and/or year.
 
     Returns:
-        metrics, composite_scores, red_flags (DataFrames)
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+            metrics, eval_metrics, composite_scores, red_flags
     """
     import os
     import pandas as pd
@@ -297,7 +301,7 @@ def read_financial_results(ticker=None, time=None, input_dir="financial_data", s
     eval_metrics = read_and_filter("eval_metrics")
     composite_scores = read_and_filter("composite_scores")
     red_flags = read_and_filter("red_flags")
-    raw_red_flags = read_and_filter("red_flags")
+    raw_red_flags = read_and_filter("raw_red_flags")
 
     red_flags = pd.concat([red_flags, raw_red_flags], axis=0, ignore_index=True)
 
