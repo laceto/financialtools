@@ -92,17 +92,26 @@ def dataframe_to_json(df):
     return json_str
 
 
-def get_sector_for_ticker(ticker: str) -> str:
+def get_sector_for_ticker(
+    ticker: str,
+    sector_file: str = "financialtools/data/sector_ticker.txt",
+) -> str:
     """
     Returns the sector for a given ticker symbol.
 
     Parameters:
     - ticker (str): The ticker symbol to look up.
+    - sector_file (str): Path to the tab-separated sector mapping file.
+      Defaults to the bundled file; pass a custom path for external consumers.
 
     Returns:
     - str: The sector associated with the ticker.
+
+    Raises:
+    - SectorNotFoundError: if the ticker is absent from the file.
+    - FileNotFoundError: if sector_file does not exist.
     """
-    tickers_sector = get_tickers(columns=['ticker', 'sector'])
+    tickers_sector = get_tickers(filepath=sector_file, columns=['ticker', 'sector'])
     result = tickers_sector.filter(pl.col('ticker') == ticker).select('sector').to_series().to_list()
 
     if not result:
