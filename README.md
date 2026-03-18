@@ -89,11 +89,17 @@ Uses `ThreadPoolExecutor` for parallel evaluation. Failed tickers return `_empty
 ### `get_stock_evaluation_report` (`chains.py`)
 
 ```python
-report = get_stock_evaluation_report("AAPL", year=2023)
+report = get_stock_evaluation_report(
+    "AAPL",
+    year=2023,
+    base_dir="financial_data",          # directory containing *.xlsx outputs
+    sector_file="financialtools/data/sector_ticker.txt",  # ticker→sector mapping
+)
 # report: StockRegimeAssessment
 ```
 
-Reads from `financial_data/*.xlsx`, fetches sector benchmarks, calls `gpt-4.1-nano` via LangChain.
+Reads from `base_dir/*.xlsx`, fetches sector benchmarks, calls `gpt-4.1-nano` via LangChain.
+External consumers pass their own `base_dir` and `sector_file` paths.
 
 ### `get_fin_data` (`utils.py`)
 
@@ -149,15 +155,28 @@ Five `@tool` functions expose the full pipeline to a ReAct agent:
 
 All tools return JSON strings and never raise — errors arrive as `{"error": "..."}`.
 
+File paths (data directory, sector mapping file) are **deployment config, not agent
+decisions** — bake them in at bootstrap time via `make_tools()`, never expose them
+as tool parameters.
+
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from financialtools.tools import TOOLS
+from financialtools.tools import make_tools
+
+# In-repo default (financial_data/ relative to CWD):
+# from financialtools.tools import TOOLS
+
+# External consumer — explicit paths:
+tools = make_tools(
+    base_dir="/path/to/my/financial_data",
+    sector_file="/path/to/my/sector_ticker.txt",
+)
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4o"),
-    tools=TOOLS,
+    tools=tools,
     checkpointer=MemorySaver(),
 )
 config = {"configurable": {"thread_id": "my-session"}, "recursion_limit": 20}

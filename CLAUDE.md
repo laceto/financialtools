@@ -35,7 +35,7 @@ This is a **fundamental stock analysis library** that pipelines three concerns:
 | `processor.py` | `RateLimiter` (thread-safe sliding-window), `Downloader` (yfinance fetch + wide→long reshape), `FundamentalTraderAssistant` (metric computation, 1-5 scoring, red-flag detection) |
 | `config.py` | Sector-specific metric weight dicts (`grouped_weights`, `sector_metric_weights`, `sec_sector_metric_weights`). Single source of truth for all scoring weights. No I/O at import time — pure Python dicts. |
 | `utils.py` | I/O helpers (Excel/CSV), ticker/sector lookups (`get_sector_for_ticker`, `get_market_metrics`), DataFrame→JSON conversion, `get_fin_data`, `list_evaluated_tickers` |
-| `tools.py` | Five `@tool` functions for LangChain/LangGraph agents: `list_available_tickers`, `get_stock_metrics`, `get_sector_benchmarks`, `get_red_flags`, `get_stock_regime_report`. All return JSON strings and never raise. `TOOLS` list is the canonical import for agent bootstraps. |
+| `tools.py` | `make_tools(base_dir, sector_file)` factory — returns five `@tool` functions with file paths baked in. `TOOLS = make_tools()` is the in-repo default. External consumers call `make_tools(base_dir=..., sector_file=...)` at bootstrap time. All tools return JSON strings, never raise; errors arrive as `{"error": "..."}`. |
 | `wrappers.py` | `DownloaderWrapper` (public download API, logs to `logs/`), `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`), Excel export/read helpers |
 | `chains.py` | LangChain pipeline: reads Excel results → loads sector benchmarks → invokes `gpt-4.1-nano` → returns `StockRegimeAssessment` |
 | `pydantic_models.py` | `StockRegimeAssessment`: validated LLM output (regime, evaluation, rationale, market comparison) |
@@ -77,24 +77,27 @@ merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises Eval
 
 **LLM report:**
 ```
-get_stock_evaluation_report(ticker, year?)
-  → read_financial_results() from financial_data/*.xlsx
-  → get_sector_for_ticker() + get_market_metrics()
+get_stock_evaluation_report(ticker, year?, base_dir, sector_file)
+  → read_financial_results() from base_dir/*.xlsx
+  → get_sector_for_ticker(ticker, sector_file=sector_file) + get_market_metrics()
   → LangChain: ChatPromptTemplate | ChatOpenAI | OutputFixingParser
   → StockRegimeAssessment (regime, evaluation, rationale, market_comparison)
 ```
 
 **Agent (tools.py):**
 ```
-TOOLS = [list_available_tickers, get_stock_metrics, get_sector_benchmarks,
-         get_red_flags, get_stock_regime_report]
+# In-repo default:
+TOOLS = make_tools()   # base_dir="financial_data", sector_file="financialtools/data/sector_ticker.txt"
 
-create_agent(model=llm, tools=TOOLS, checkpointer=MemorySaver())
-  list_available_tickers()       → list_evaluated_tickers() → JSON array
-  get_stock_metrics(ticker,year) → get_fin_data()            → JSON {metrics, composite_scores, red_flags}
-  get_sector_benchmarks(sector)  → get_market_metrics() ×2  → JSON {financial, valuation}
-  get_red_flags(ticker)          → get_fin_data()            → JSON {red_flags}
-  get_stock_regime_report(t,yr)  → get_stock_evaluation_report() → JSON (model_dump())
+# External consumer — paths baked in at bootstrap, never exposed to the LLM:
+tools = make_tools(base_dir="/path/to/data", sector_file="/path/to/sector_ticker.txt")
+
+create_agent(model=llm, tools=tools, checkpointer=MemorySaver())
+  list_available_tickers()       → list_evaluated_tickers(base_dir) → JSON array
+  get_stock_metrics(ticker,year) → get_fin_data(base_dir)           → JSON {metrics, composite_scores, red_flags}
+  get_sector_benchmarks(sector)  → get_market_metrics(base_dir) ×2  → JSON {financial, valuation}
+  get_red_flags(ticker)          → get_fin_data(base_dir)           → JSON {red_flags}
+  get_stock_regime_report(t,yr)  → get_stock_evaluation_report(base_dir, sector_file) → JSON (model_dump())
 ```
 
 All tools: return JSON strings, never raise; errors arrive as `{"error": "..."}`.
