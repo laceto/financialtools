@@ -369,9 +369,24 @@ class FundamentalTraderAssistant:
     def compute_valuation_metrics(self):
         try:
             d = self.d.copy()
+
+            # sharesoutstanding is not in the merged financial statements — it comes from
+            # t.info ("sharesOutstanding"), which callers must merge in before constructing
+            # FundamentalTraderAssistant. Fall back to a NaN series if absent so that
+            # bvps/fcf_per_share are NaN rather than crashing the whole method.
+            if "sharesoutstanding" in d.columns:
+                shares = d["sharesoutstanding"]
+            else:
+                _logger.warning(
+                    f"[{self.ticker}] 'sharesoutstanding' not in data — "
+                    "bvps and fcf_per_share will be NaN. "
+                    "Merge sharesoutstanding from Downloader.get_info_data() before calling evaluate()."
+                )
+                shares = pd.Series(np.nan, index=d.index)
+
             # valuation
-            d['bvps'] = d["common_stock_equity"] / d['sharesoutstanding']
-            d['fcf_per_share'] = self.safe_div(d["free_cash_flow"], d["sharesoutstanding"])
+            d['bvps'] = self.safe_div(d["common_stock_equity"], shares)
+            d['fcf_per_share'] = self.safe_div(d["free_cash_flow"], shares)
             d['eps'] = d['diluted_eps']
 
             d["P/E"] = self.safe_div(d["currentprice"], d["eps"])
