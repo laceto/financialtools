@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain.output_parsers import OutputFixingParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -77,8 +76,6 @@ def get_stock_evaluation_report(
 
     # Instantiate the parser with the Pydantic model
     parser = PydanticOutputParser(pydantic_object=StockRegimeAssessment)
-    # Wrap your parser with OutputFixingParser
-    parser = OutputFixingParser.from_llm(parser=parser, llm=llm)
 
     # Get the format instructions string from the parser
     format_instructions = parser.get_format_instructions()
