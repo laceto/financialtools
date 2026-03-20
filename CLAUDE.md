@@ -38,8 +38,8 @@ This is a **fundamental stock analysis library** that pipelines three concerns:
 | `tools.py` | `make_tools(base_dir, sector_file)` factory — returns five `@tool` functions with file paths baked in. `TOOLS = make_tools()` is the in-repo default. External consumers call `make_tools(base_dir=..., sector_file=...)` at bootstrap time. All tools return JSON strings, never raise; errors arrive as `{"error": "..."}`. |
 | `wrappers.py` | `DownloaderWrapper` (public download API, logs to `logs/`), `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`), Excel export/read helpers |
 | `chains.py` | LangChain pipeline: reads Excel results → loads sector benchmarks → invokes `gpt-4.1-nano` → returns `StockRegimeAssessment` |
-| `pydantic_models.py` | `StockRegimeAssessment`: validated LLM output (regime, evaluation, rationale, market comparison) |
-| `prompts.py` | `build_prompt(sector_aware, include_red_flags)` factory + four ready-made prompt constants. Shared metric-definition blocks (`_FINANCIAL_METRICS_BLOCK`, `_EVAL_METRICS_BLOCK`, etc.) are the single source of truth for metric descriptions. |
+| `pydantic_models.py` | `StockRegimeAssessment` (regime + valuation — original, backward-compatible). Seven topic-focused models: `LiquidityAssessment`, `SolvencyAssessment`, `ProfitabilityAssessment`, `EfficiencyAssessment`, `CashFlowAssessment`, `GrowthAssessment`, `RedFlagsAssessment`. `ComprehensiveStockAssessment` wraps all seven plus top-level regime + evaluation fields. All Pydantic v2; use `.model_dump()`. |
+| `prompts.py` | Two factories: `build_prompt(sector_aware, include_red_flags, include_extended_metrics)` for `StockRegimeAssessment` variants; `build_topic_prompt(topic)` for the seven topic models and `ComprehensiveStockAssessment`. Shared metric-definition blocks (`_FINANCIAL_METRICS_BLOCK`, `_EXTENDED_METRICS_BLOCK`, `_TOPIC_METRICS`) are the single source of truth for metric descriptions. Exports 5 regime prompt constants + 8 topic prompt constants. |
 | `exceptions.py` | `FinancialToolsError` (base), `DownloadError`, `EvaluationError`, `SectorNotFoundError` (also a `ValueError`) |
 
 ### Key data flows

@@ -50,8 +50,8 @@ print(report.regime_rationale)
 | `config.py` | Sector weight dicts (single source of truth) |
 | `utils.py` | I/O helpers, ticker/sector lookups, `get_fin_data`, `list_evaluated_tickers` |
 | `tools.py` | Five `@tool` functions for LangChain/LangGraph agents |
-| `prompts.py` | `build_prompt()` factory + four prompt constants |
-| `pydantic_models.py` | `StockRegimeAssessment` Pydantic model |
+| `prompts.py` | `build_prompt()` + `build_topic_prompt()` factories + 13 prompt constants |
+| `pydantic_models.py` | `StockRegimeAssessment` (regime/valuation); 7 topic models (`LiquidityAssessment` … `RedFlagsAssessment`); `ComprehensiveStockAssessment` |
 | `exceptions.py` | `FinancialToolsError`, `DownloadError`, `EvaluationError`, `SectorNotFoundError` |
 
 ## Key classes
@@ -144,17 +144,39 @@ from financialtools.exceptions import (
 
 ## Prompts (`prompts.py`)
 
-```python
-from financialtools.prompts import build_prompt
+Two factories compose prompts from shared metric-definition blocks:
 
-prompt = build_prompt(sector_aware=True, include_red_flags=True)
+```python
+from financialtools.prompts import build_prompt, build_topic_prompt
+
+# Regime / valuation prompt (for StockRegimeAssessment)
+prompt = build_prompt(
+    sector_aware=True,
+    include_red_flags=True,
+    include_extended_metrics=True,   # adds 14 unscored extended metrics block
+)
+
+# Topic-focused prompt (for the seven topic models)
+prompt = build_topic_prompt("liquidity")   # or solvency / profitability / efficiency /
+                                           #    cash_flow / growth / red_flags / comprehensive
 ```
 
-Four ready-made constants are also importable:
+**Regime prompt constants** (for `StockRegimeAssessment`):
 - `system_prompt_StockRegimeAssessment`
 - `system_prompt_StockRegimeAssessment_sector`
 - `system_prompt_noredflags_StockRegimeAssessment`
+- `system_prompt_StockRegimeAssessment_extended`
 - `system_prompt`
+
+**Topic prompt constants** (one per topic model):
+- `system_prompt_liquidity` → `LiquidityAssessment`
+- `system_prompt_solvency` → `SolvencyAssessment`
+- `system_prompt_profitability` → `ProfitabilityAssessment`
+- `system_prompt_efficiency` → `EfficiencyAssessment`
+- `system_prompt_cash_flow` → `CashFlowAssessment`
+- `system_prompt_growth` → `GrowthAssessment`
+- `system_prompt_red_flags` → `RedFlagsAssessment`
+- `system_prompt_comprehensive` → `ComprehensiveStockAssessment`
 
 ## LangChain / LangGraph agent (`tools.py`)
 
