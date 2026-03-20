@@ -161,9 +161,21 @@ class Downloader:
             return pd.DataFrame()
         return self._info
     
+    # Market-data columns pulled from _info and broadcast across all time periods.
+    # Keeping this list here (not in compute_valuation_metrics) makes it the single
+    # source of truth for what get_merged_data() enriches.
+    _MARKET_COLS = ("marketcap", "currentprice", "sharesoutstanding")
+
     def get_merged_data(self) -> pd.DataFrame:
         """
-        Merge balance sheet, income statement, and cash flow data for a single ticker.
+        Merge balance sheet, income statement, and cash flow data for a single ticker,
+        then broadcast market-data columns (marketcap, currentprice, sharesoutstanding)
+        from _info across all time periods.
+
+        Callers no longer need to manually call get_info_data() and merge — the returned
+        DataFrame is fully enriched and ready for FundamentalTraderAssistant.
+
+        Returns pd.DataFrame() on failure; never raises.
         """
         try:
             dfs = [self._balance_sheet, self._cashflow, self._income_stmt]
@@ -172,13 +184,23 @@ class Downloader:
             if len(dfs) < 2:
                 return pd.DataFrame()
 
-            # Perform merge on ['ticker', 'time']
+            # Merge financial statements on (ticker, time).
             merged = dfs[0]
             for df in dfs[1:]:
                 merged = merged.merge(df, how="left", on=["ticker", "time"])
 
             if merged.empty:
                 return pd.DataFrame()
+
+            # Enrich with market-data columns from _info (marketcap, currentprice,
+            # sharesoutstanding). Columns arrive in yfinance camelCase — lowercase them
+            # to match the snake_case convention used throughout this module.
+            if self._info is not None and not self._info.empty:
+                info_lower = self._info.rename(columns=str.lower)
+                available  = [c for c in self._MARKET_COLS if c in info_lower.columns]
+                if available:
+                    market_row = info_lower[["ticker"] + available]
+                    merged = merged.merge(market_row, on="ticker", how="left")
 
             return merged
 
@@ -403,15 +425,34 @@ class FundamentalTraderAssistant:
                 shares = pd.Series(np.nan, index=d.index)
 
             # valuation
+            # currentprice and marketcap come from get_info_data() and must be merged
+            # in by the caller before constructing FundamentalTraderAssistant.
+            # Fall back to NaN series if absent so that valuation metrics are NaN
+            # rather than crashing the whole method.
+            _price  = d.get("currentprice", pd.Series(np.nan, index=d.index))
+            _mktcap = d.get("marketcap",    pd.Series(np.nan, index=d.index))
+            if "currentprice" not in d.columns:
+                _logger.warning(
+                    f"[{self.ticker}] 'currentprice' not in data — "
+                    "P/E, P/B, P/FCF, EarningsYield will be NaN. "
+                    "Merge currentprice from Downloader.get_info_data() before calling evaluate()."
+                )
+            if "marketcap" not in d.columns:
+                _logger.warning(
+                    f"[{self.ticker}] 'marketcap' not in data — "
+                    "FCFYield will be NaN. "
+                    "Merge marketcap from Downloader.get_info_data() before calling evaluate()."
+                )
+
             d['bvps'] = self.safe_div(d["common_stock_equity"], shares)
             d['fcf_per_share'] = self.safe_div(d["free_cash_flow"], shares)
             d['eps'] = d['diluted_eps']
 
-            d["P/E"] = self.safe_div(d["currentprice"], d["eps"])
-            d["P/B"] = self.safe_div(d["currentprice"], d["bvps"])
-            d["P/FCF"] = self.safe_div(d["currentprice"], d["fcf_per_share"])
-            d["EarningsYield"] = self.safe_div(d["eps"], d["currentprice"])
-            d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["marketcap"])
+            d["P/E"] = self.safe_div(_price, d["eps"])
+            d["P/B"] = self.safe_div(_price, d["bvps"])
+            d["P/FCF"] = self.safe_div(_price, d["fcf_per_share"])
+            d["EarningsYield"] = self.safe_div(d["eps"], _price)
+            d["FCFYield"] = self.safe_div(d["free_cash_flow"], _mktcap)
 
             metric_cols = ["bvps", "fcf_per_share", "eps", "P/E",
                            "P/B", "P/FCF", "EarningsYield", "FCFYield"]
@@ -440,7 +481,10 @@ class FundamentalTraderAssistant:
 
             # ── Cash Flow Metrics ─────────────────────────────────────────────
             d["FCFToRevenue"] = self.safe_div(d["free_cash_flow"], d["total_revenue"])
-            d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["marketcap"])
+            d["FCFYield"] = self.safe_div(
+                d["free_cash_flow"],
+                d.get("marketcap", pd.Series(np.nan, index=d.index)),
+            )
             d["FCFtoDebt"] = self.safe_div(d["free_cash_flow"], d["total_debt"])
 
             # ── Leverage & Liquidity ──────────────────────────────────────────
@@ -782,7 +826,8 @@ class FundamentalTraderAssistant:
             "eval_metrics": pd.DataFrame,
             "composite_scores": pd.DataFrame,
             "raw_red_flags": pd.DataFrame,
-            "red_flags": pd.DataFrame
+            "red_flags": pd.DataFrame,
+            "extended_metrics": pd.DataFrame
         """
         try:
             # Step 1: Compute metrics

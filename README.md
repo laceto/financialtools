@@ -60,9 +60,13 @@ print(report.regime_rationale)
 
 ```python
 d = Downloader.from_ticker("AAPL")
-merged_df = d.get_merged_data()   # pd.DataFrame — balance sheet + income + cashflow (long format)
-info_df   = d.get_info_data()     # pd.DataFrame — marketCap, forwardPE, etc.
+merged_df = d.get_merged_data()   # balance sheet + income + cashflow + market data (long format)
+info_df   = d.get_info_data()     # full yfinance info DataFrame (marketCap, forwardPE, etc.)
 ```
+
+`get_merged_data()` automatically broadcasts `marketcap`, `currentprice`, and
+`sharesoutstanding` from `_info` across all time periods — no manual merge needed before
+passing to `FundamentalTraderAssistant`.
 
 `from_ticker` raises nothing on failure — returns an empty `Downloader`; `get_merged_data` returns `pd.DataFrame()`.
 

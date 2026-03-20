@@ -48,7 +48,9 @@ This is a **fundamental stock analysis library** that pipelines three concerns:
 ```
 Ticker → Downloader.from_ticker() → yfinance
   → balance_sheet / income_stmt / cashflow (wide → long via __reshape_fin_data)
-  → get_merged_data() → single merged DataFrame
+  → get_merged_data() → merged financial DataFrame
+      + broadcasts _MARKET_COLS (marketcap, currentprice, sharesoutstanding)
+        from _info across all time periods (columns lowercased to snake_case)
   → DownloaderWrapper.download_data() → saves to logs/, returns pandas DataFrame
 ```
 
