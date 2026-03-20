@@ -46,7 +46,8 @@ print(report.regime_rationale)
 |---|---|
 | `processor.py` | `RateLimiter`, `Downloader`, `FundamentalTraderAssistant` |
 | `wrappers.py` | `DownloaderWrapper`, `FundamentalEvaluator`, file I/O helpers |
-| `chains.py` | LangChain pipeline → `StockRegimeAssessment` |
+| `chains.py` | LangChain pipeline → `StockRegimeAssessment` (reads from Excel output files) |
+| `analysis.py` | `run_topic_analysis()` — single-ticker end-to-end pipeline (download → evaluate → 8 LLM chains) returning `TopicAnalysisResult` |
 | `config.py` | Sector weight dicts (single source of truth) |
 | `utils.py` | I/O helpers, ticker/sector lookups, `get_fin_data`, `list_evaluated_tickers` |
 | `tools.py` | Five `@tool` functions for LangChain/LangGraph agents |
@@ -115,6 +116,33 @@ report = get_stock_evaluation_report(
 
 Reads from `base_dir/*.xlsx`, fetches sector benchmarks, calls `gpt-4.1-nano` via LangChain.
 External consumers pass their own `base_dir` and `sector_file` paths.
+
+### `run_topic_analysis` (`analysis.py`)
+
+```python
+from financialtools.analysis import run_topic_analysis
+
+result = run_topic_analysis(
+    "AAPL",
+    sector="Technology Services",  # must match a key in config.sector_metric_weights
+    year=2023,                     # optional — None sends all available years
+    model="gpt-4.1-nano",          # OpenAI model (default)
+)
+# result: TopicAnalysisResult
+print(result.regime.regime)           # "bull" | "bear"
+print(result.liquidity.rating)        # "strong" | "adequate" | "weak"
+print(result.growth.trajectory)       # "accelerating" | "stable" | "decelerating" | "declining"
+print(result.red_flags.severity)      # "none" | "low" | "moderate" | "high"
+print(result.evaluate_output.keys())  # metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
+```
+
+Runs three stages in one call: download → `FundamentalTraderAssistant.evaluate()` → 8 LLM chains (7 topic models + `StockRegimeAssessment`). No pre-existing Excel files required — data flows directly from yfinance.
+
+**Does not need `financial_data/`** — unlike `get_stock_evaluation_report`, this pipeline is self-contained.
+
+`result.to_dict()` serialises all Pydantic assessments to plain dicts via `.model_dump()`.
+
+Individual topic fields are `None` when the corresponding chain fails; errors are logged as WARNING and processing continues.
 
 ### `get_fin_data` (`utils.py`)
 
@@ -230,6 +258,31 @@ Or use the interactive REPL (streams tokens, preserves tool-call history across 
 python scripts/run_agent.py
 python scripts/run_agent.py --model gpt-4o
 ```
+
+## Streamlit app (`app.py`)
+
+Interactive web UI for single-ticker topic analysis — no Excel files or pre-computed benchmarks required.
+
+```bash
+streamlit run app.py
+```
+
+The sidebar accepts ticker, sector (dropdown), optional year filter, and model choice. The pipeline runs with a live progress indicator (download → evaluate → 7 topic chains → regime chain). Results are shown in tabs — one per topic plus an overall regime tab — with coloured rating badges and expandable detail sections.
+
+## CLI (`scripts/run_analysis.py`)
+
+```bash
+# List valid sector names
+python scripts/run_analysis.py --list-sectors
+
+# Full 8-chain analysis, all years
+python scripts/run_analysis.py --ticker AAPL --sector "Technology Services"
+
+# Single year, alternative model
+python scripts/run_analysis.py --ticker ENI.MI --sector "Energy Minerals" --year 2023 --model gpt-4o
+```
+
+Prints a structured text report to stdout. Exit code 1 on download / evaluation failure.
 
 Required `.env` keys:
 

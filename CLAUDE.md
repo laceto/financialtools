@@ -16,6 +16,13 @@ python -m unittest tests/test_processor.py
 
 # Run all tests
 python -m unittest discover -s tests
+
+# Streamlit app (single-ticker topic analysis UI)
+streamlit run app.py
+
+# CLI: single-ticker topic analysis
+python scripts/run_analysis.py --ticker AAPL --sector "Technology Services"
+python scripts/run_analysis.py --list-sectors
 ```
 
 No Makefile, no dedicated lint/format tooling is configured. Add `ruff` or `black` if needed.
@@ -26,7 +33,13 @@ This is a **fundamental stock analysis library** that pipelines three concerns:
 
 1. **Data acquisition** — fetch and reshape Yahoo Finance data into long-format DataFrames
 2. **Metric evaluation** — compute and score 24 financial metrics using sector-weighted rubrics, plus 14 unscored extended metrics
-3. **LLM synthesis** — send scored results to GPT-4.1-nano via LangChain and return a structured `StockRegimeAssessment`
+3. **LLM synthesis** — send scored results to GPT-4.1-nano via LangChain and return structured assessments: `StockRegimeAssessment` (overall regime + valuation) and seven topic-focused models (`LiquidityAssessment` … `RedFlagsAssessment`) wrapped in `TopicAnalysisResult`
+
+There are two LLM pipeline entry points:
+- `chains.get_stock_evaluation_report()` — reads from pre-computed Excel files in `financial_data/`
+- `analysis.run_topic_analysis()` — self-contained, no Excel files needed; runs all 8 chains in one call
+
+The Streamlit app (`app.py`) and CLI (`scripts/run_analysis.py`) both use `run_topic_analysis()`.
 
 ### Module responsibilities
 
@@ -37,7 +50,8 @@ This is a **fundamental stock analysis library** that pipelines three concerns:
 | `utils.py` | I/O helpers (Excel/CSV), ticker/sector lookups (`get_sector_for_ticker`, `get_market_metrics`), DataFrame→JSON conversion, `get_fin_data`, `list_evaluated_tickers` |
 | `tools.py` | `make_tools(base_dir, sector_file)` factory — returns five `@tool` functions with file paths baked in. `TOOLS = make_tools()` is the in-repo default. External consumers call `make_tools(base_dir=..., sector_file=...)` at bootstrap time. All tools return JSON strings, never raise; errors arrive as `{"error": "..."}`. |
 | `wrappers.py` | `DownloaderWrapper` (public download API, logs to `logs/`), `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`), Excel export/read helpers |
-| `chains.py` | LangChain pipeline: reads Excel results → loads sector benchmarks → invokes `gpt-4.1-nano` → returns `StockRegimeAssessment` |
+| `chains.py` | LangChain pipeline: reads Excel results → loads sector benchmarks → invokes `gpt-4.1-nano` → returns `StockRegimeAssessment`. Uses `PydanticOutputParser` directly (no `OutputFixingParser` — removed in LangChain 1.0). |
+| `analysis.py` | `run_topic_analysis(ticker, sector, year, model)` — self-contained pipeline: download → evaluate → 8 LLM chains (7 topic models + `StockRegimeAssessment`). Returns `TopicAnalysisResult` dataclass. `_TOPIC_MAP` is the single source of truth for topic → `(prompt, model_cls)` pairs. Built-in one-shot fix retry on parse error (replaces `OutputFixingParser`). |
 | `pydantic_models.py` | `StockRegimeAssessment` (regime + valuation — original, backward-compatible). Seven topic-focused models: `LiquidityAssessment`, `SolvencyAssessment`, `ProfitabilityAssessment`, `EfficiencyAssessment`, `CashFlowAssessment`, `GrowthAssessment`, `RedFlagsAssessment`. `ComprehensiveStockAssessment` wraps all seven plus top-level regime + evaluation fields. All Pydantic v2; use `.model_dump()`. |
 | `prompts.py` | Two factories: `build_prompt(sector_aware, include_red_flags, include_extended_metrics)` for `StockRegimeAssessment` variants; `build_topic_prompt(topic)` for the seven topic models and `ComprehensiveStockAssessment`. Shared metric-definition blocks (`_FINANCIAL_METRICS_BLOCK`, `_EXTENDED_METRICS_BLOCK`, `_TOPIC_METRICS`) are the single source of truth for metric descriptions. Exports 5 regime prompt constants + 8 topic prompt constants. |
 | `exceptions.py` | `FinancialToolsError` (base), `DownloadError`, `EvaluationError`, `SectorNotFoundError` (also a `ValueError`) |
@@ -78,13 +92,30 @@ merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises Eval
 - `self.metric_scores` — long format, set by `compute_scores()`, columns: ticker, time, metrics, value, score, sector
 - `self.scores` — wide format, set by `evaluate()`, columns: sector, ticker, time, composite_score
 
-**LLM report:**
+**LLM report (from Excel files):**
 ```
 get_stock_evaluation_report(ticker, year?, base_dir, sector_file)
   → read_financial_results() from base_dir/*.xlsx
   → get_sector_for_ticker(ticker, sector_file=sector_file) + get_market_metrics()
-  → LangChain: ChatPromptTemplate | ChatOpenAI | OutputFixingParser
+  → LangChain: ChatPromptTemplate | ChatOpenAI | PydanticOutputParser
   → StockRegimeAssessment (regime, evaluation, rationale, market_comparison)
+```
+
+**Topic analysis (self-contained, no Excel required):**
+```
+run_topic_analysis(ticker, sector, year?, model?) → TopicAnalysisResult
+  → Downloader.from_ticker(ticker).get_merged_data()   # raises EvaluationError if empty
+  → _build_weights(sector)                             # falls back to "Default" with warning
+  → FundamentalTraderAssistant(merged, weights).evaluate()
+  → _normalise_time() + _filter_year() per DataFrame
+  → dataframe_to_json() × 5  (metrics, extended_metrics, eval_metrics, composite_scores, red_flags)
+  → for topic in _TOPIC_MAP:
+      _build_topic_chain(topic, llm) → (prompt, PydanticOutputParser)
+      _invoke_chain(prompt, parser, llm, payloads, ...) → topic assessment | None
+          primary: prompt | llm → parser.invoke(raw)
+          on failure: _FIX_PROMPT | llm → parser.invoke(fixed_raw)  [one retry]
+  → _build_regime_chain(llm) → regime assessment | None
+  → TopicAnalysisResult(ticker, sector, year, liquidity, solvency, …, regime, evaluate_output)
 ```
 
 **Agent (tools.py):**
@@ -150,7 +181,7 @@ from financialtools.exceptions import SectorNotFoundError, EvaluationError, Down
 ```
 
 - `SectorNotFoundError` — raised by `get_sector_for_ticker`, `get_market_metrics`. Inherits `ValueError` so `except ValueError` blocks still work.
-- `EvaluationError` — raised by `FundamentalTraderAssistant.__init__` on empty data, multi-ticker input, NaN tickers, or bad weights.
+- `EvaluationError` — raised by `FundamentalTraderAssistant.__init__` on empty data, multi-ticker input, NaN tickers, or bad weights. Also raised by `run_topic_analysis()` when the download returns an empty DataFrame.
 - `DownloadError` — reserved for download-layer failures; not yet raised at call sites.
 
 ### Logging
@@ -167,5 +198,6 @@ All modules use `logging.getLogger(__name__)`. `wrappers.py` is the only module 
 | New extended-metric columns all NaN | Optional source column absent for that ticker (e.g. `inventory`, `invested_capital`, `ebit`); logged as warning — not an error |
 | `extended_metrics` key missing from `evaluate()` result | `_EMPTY_RESULT_KEYS` was not updated — must contain `"extended_metrics"` |
 | Growth rates in wrong order | `compute_extended_metrics()` sorts by `time` before `pct_change()` — check whether input `time` values are parseable strings or timestamps |
-| LLM returns unexpected output | `OutputFixingParser` is the recovery path — check `chains.py`; note `format_instructions` has no placeholder in the prompt (TODO in `chains.py`) |
+| LLM returns unexpected output in `chains.py` | `PydanticOutputParser` is used directly; no auto-fix. Check raw LLM response in `logs/debug.log`. Note `format_instructions` placeholder is present but prompt may not surface schema to the LLM. |
+| LLM topic chain returns `None` in `TopicAnalysisResult` | `_invoke_chain` logs a WARNING with the topic name — check logs. One fix retry is attempted automatically. If both fail, the field is `None` and the run continues. |
 | Logs written to wrong directory | Confirm `wrappers.py` is imported from the package, not copied — `_LOGS_DIR` is `__file__`-relative |
