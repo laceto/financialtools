@@ -71,11 +71,22 @@ info_df   = d.get_info_data()     # pd.DataFrame — marketCap, forwardPE, etc.
 ```python
 assistant = FundamentalTraderAssistant(data=merged_df, weights=weights_df)
 result = assistant.evaluate()
-# result keys: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags
+# result keys: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
 ```
 
 **Raises** `EvaluationError` if `data` is empty, contains multiple tickers, or has NaN-only ticker column.
-`evaluate()` returns `_empty_result()` (all keys, fresh empty DataFrames) on any internal failure — never raises.
+`evaluate()` returns `_empty_result()` (all 6 keys, fresh empty DataFrames) on any internal failure — never raises.
+
+`evaluate()` return keys:
+
+| Key | Content |
+|---|---|
+| `metrics` | wide — 24 scored metric columns (original 11 + extended 13) |
+| `eval_metrics` | wide — P/E, P/B, P/FCF, EarningsYield, FCFYield |
+| `composite_scores` | one row per `(sector, ticker, time)` with `composite_score` |
+| `raw_red_flags` | cash-flow quality flags (negative FCF/OCF, EBITDA >> OCF) |
+| `red_flags` | threshold-based flags (negative margins, high D/E, etc.) |
+| `extended_metrics` | 14 unscored columns: efficiency chain, growth rates, red-flag ratios |
 
 ### `FundamentalEvaluator` (`wrappers.py`)
 
@@ -218,7 +229,7 @@ LANGSMITH_PROJECT=financialtools   # optional, defaults to "default"
 python -m unittest discover -s tests
 ```
 
-No test suite exists yet — see `financialtools_findings_plan.md` for the deferred smoke-test backlog item.
+32 unit tests in `tests/test_processor.py` — all offline (no network, no `.env` required).
 
 ## License
 

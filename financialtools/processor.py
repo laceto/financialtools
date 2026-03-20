@@ -286,7 +286,10 @@ class Downloader:
 # Invariant: every key in the success return of evaluate() must appear here.
 # IMPORTANT: Always return via _empty_result() — never _EMPTY_RESULT.copy(),
 # which is a shallow copy and shares DataFrame objects across calls.
-_EMPTY_RESULT_KEYS = ("metrics", "eval_metrics", "composite_scores", "raw_red_flags", "red_flags")
+_EMPTY_RESULT_KEYS = (
+    "metrics", "eval_metrics", "composite_scores",
+    "raw_red_flags", "red_flags", "extended_metrics",
+)
 
 
 def _empty_result() -> dict:
@@ -299,6 +302,7 @@ def _empty_result() -> dict:
 # evaluate() and compute_scores() derive value_vars dynamically from compute_metrics()
 # output columns so that adding a new metric to compute_metrics() is automatically scored.
 SCORED_METRICS: list = [
+    # Original 11
     "GrossMargin",
     "OperatingMargin",
     "NetProfitMargin",
@@ -310,6 +314,20 @@ SCORED_METRICS: list = [
     "FCFtoDebt",
     "DebtToEquity",
     "CurrentRatio",
+    # Extended 13 (added by compute_metrics() expansion)
+    "QuickRatio",
+    "CashRatio",
+    "WorkingCapitalRatio",
+    "DebtRatio",
+    "EquityRatio",
+    "NetDebtToEBITDA",
+    "InterestCoverage",
+    "ROIC",
+    "AssetTurnover",
+    "OCFRatio",
+    "FCFMargin",
+    "CashConversion",
+    "CapexRatio",
 ]
 
 
@@ -410,28 +428,87 @@ class FundamentalTraderAssistant:
         try:
             d = self.d.copy()
 
-            # Profitability Margins
+            # ── Profitability Margins ─────────────────────────────────────────
             d["GrossMargin"] = self.safe_div(d["gross_profit"], d["total_revenue"])
             d["OperatingMargin"] = self.safe_div(d["operating_income"], d["total_revenue"])
             d["NetProfitMargin"] = self.safe_div(d["net_income_common_stockholders"], d["total_revenue"])
             d["EBITDAMargin"] = self.safe_div(d["ebitda"], d["total_revenue"])
 
-            # Returns
+            # ── Returns ───────────────────────────────────────────────────────
             d["ROA"] = self.safe_div(d["net_income_common_stockholders"], d["total_assets"])
             d["ROE"] = self.safe_div(d["net_income_common_stockholders"], d["common_stock_equity"])
 
-            # Cash Flow Metrics
+            # ── Cash Flow Metrics ─────────────────────────────────────────────
             d["FCFToRevenue"] = self.safe_div(d["free_cash_flow"], d["total_revenue"])
             d["FCFYield"] = self.safe_div(d["free_cash_flow"], d["marketcap"])
             d["FCFtoDebt"] = self.safe_div(d["free_cash_flow"], d["total_debt"])
 
-            # Leverage & Liquidity
+            # ── Leverage & Liquidity ──────────────────────────────────────────
             d["DebtToEquity"] = self.safe_div(d["total_debt"], d["common_stock_equity"])
             d["CurrentRatio"] = self.safe_div(d["current_assets"], d["current_liabilities"])
 
-            metric_cols = ["GrossMargin", "OperatingMargin", "NetProfitMargin", "EBITDAMargin",
-                           "ROA", "ROE", "FCFToRevenue", "FCFYield", "FCFtoDebt",
-                           "DebtToEquity", "CurrentRatio"]
+            # ── Liquidity (extended) ──────────────────────────────────────────
+            # d.get() returns the column if present, or a NaN Series — prevents
+            # KeyError on tickers that don't report inventory/working_capital.
+            d["QuickRatio"] = self.safe_div(
+                d["current_assets"] - d.get("inventory", pd.Series(np.nan, index=d.index)),
+                d["current_liabilities"],
+            )
+            d["CashRatio"] = self.safe_div(
+                d.get("cash_and_cash_equivalents", pd.Series(np.nan, index=d.index)),
+                d["current_liabilities"],
+            )
+            d["WorkingCapitalRatio"] = self.safe_div(
+                d.get("working_capital", pd.Series(np.nan, index=d.index)),
+                d["current_assets"],
+            )
+
+            # ── Solvency (extended) ───────────────────────────────────────────
+            d["DebtRatio"] = self.safe_div(d["total_debt"], d["total_assets"])
+            d["EquityRatio"] = self.safe_div(d["common_stock_equity"], d["total_assets"])
+            d["NetDebtToEBITDA"] = self.safe_div(
+                d.get("net_debt", pd.Series(np.nan, index=d.index)),
+                d["ebitda"],
+            )
+            d["InterestCoverage"] = self.safe_div(
+                d.get("ebit", pd.Series(np.nan, index=d.index)),
+                d.get("interest_expense_non_operating", pd.Series(np.nan, index=d.index)),
+            )
+
+            # ── Returns: ROIC (extended) ──────────────────────────────────────
+            # tax_rate_for_calcs and invested_capital may be absent for some tickers.
+            _tax  = d.get("tax_rate_for_calcs", pd.Series(np.nan, index=d.index))
+            _ic   = d.get("invested_capital",   pd.Series(np.nan, index=d.index))
+            _ebit = d.get("ebit",               pd.Series(np.nan, index=d.index))
+            d["ROIC"] = self.safe_div(_ebit * (1 - _tax), _ic)
+
+            # ── Efficiency (extended) ─────────────────────────────────────────
+            d["AssetTurnover"] = self.safe_div(d["total_revenue"], d["total_assets"])
+
+            # ── Cash Flow (extended) ──────────────────────────────────────────
+            d["OCFRatio"] = self.safe_div(d["operating_cash_flow"], d["current_liabilities"])
+            d["FCFMargin"] = self.safe_div(d["free_cash_flow"], d["total_revenue"])
+            d["CashConversion"] = self.safe_div(
+                d["operating_cash_flow"],
+                d["net_income_common_stockholders"],
+            )
+            d["CapexRatio"] = self.safe_div(
+                d.get("capital_expenditure", pd.Series(np.nan, index=d.index)),
+                d["operating_cash_flow"],
+            )
+
+            metric_cols = [
+                # Original 11
+                "GrossMargin", "OperatingMargin", "NetProfitMargin", "EBITDAMargin",
+                "ROA", "ROE", "FCFToRevenue", "FCFYield", "FCFtoDebt",
+                "DebtToEquity", "CurrentRatio",
+                # Extended 13
+                "QuickRatio", "CashRatio", "WorkingCapitalRatio",
+                "DebtRatio", "EquityRatio", "NetDebtToEBITDA", "InterestCoverage",
+                "ROIC",
+                "AssetTurnover",
+                "OCFRatio", "FCFMargin", "CashConversion", "CapexRatio",
+            ]
 
             d = d[["ticker", "time"] + metric_cols]
             d['sector'] = self.sector
@@ -449,18 +526,42 @@ class FundamentalTraderAssistant:
         """
         df = df.copy()
         thresholds = {
-            "GrossMargin": [0.2, 0.3, 0.4, 0.5],
-            "OperatingMargin": [0.05, 0.1, 0.15, 0.2],
-            "NetProfitMargin": [0.03, 0.07, 0.12, 0.2],
-            "EBITDAMargin": [0.1, 0.2, 0.3, 0.4],
-            "ROA": [0.02, 0.05, 0.08, 0.12],
-            "ROE": [0.05, 0.1, 0.15, 0.2],
-            "FCFToRevenue": [0.02, 0.05, 0.1, 0.2],
-            "FCFYield": [0.02, 0.04, 0.06, 0.1],
-            "DebtToEquity": [0.5, 1.0, 1.5, 2.0],  # inverse scoring
-            "CurrentRatio": [1.0, 1.2, 1.5, 2.0],
-            "FCFtoDebt": [0.05, 0.1, 0.2, 0.3],
+            # Original 11
+            "GrossMargin":         [0.2, 0.3, 0.4, 0.5],
+            "OperatingMargin":     [0.05, 0.1, 0.15, 0.2],
+            "NetProfitMargin":     [0.03, 0.07, 0.12, 0.2],
+            "EBITDAMargin":        [0.1, 0.2, 0.3, 0.4],
+            "ROA":                 [0.02, 0.05, 0.08, 0.12],
+            "ROE":                 [0.05, 0.1, 0.15, 0.2],
+            "FCFToRevenue":        [0.02, 0.05, 0.1, 0.2],
+            "FCFYield":            [0.02, 0.04, 0.06, 0.1],
+            "DebtToEquity":        [0.5, 1.0, 1.5, 2.0],   # inverse: lower is better
+            "CurrentRatio":        [1.0, 1.2, 1.5, 2.0],
+            "FCFtoDebt":           [0.05, 0.1, 0.2, 0.3],
+            # Liquidity (extended)
+            "QuickRatio":          [0.5, 0.8, 1.0, 1.5],
+            "CashRatio":           [0.1, 0.2, 0.5, 1.0],
+            "WorkingCapitalRatio": [0.05, 0.1, 0.2, 0.3],
+            # Solvency (extended)
+            "DebtRatio":           [0.2, 0.4, 0.6, 0.8],   # inverse: lower is better
+            "EquityRatio":         [0.2, 0.4, 0.6, 0.8],
+            "NetDebtToEBITDA":     [1.0, 2.0, 3.0, 5.0],   # inverse: lower is better
+            "InterestCoverage":    [1.5, 3.0, 5.0, 10.0],
+            # Returns (extended)
+            "ROIC":                [0.05, 0.1, 0.15, 0.2],
+            # Efficiency (extended)
+            "AssetTurnover":       [0.3, 0.6, 1.0, 1.5],
+            # Cash Flow (extended)
+            "OCFRatio":            [0.1, 0.2, 0.4, 0.6],
+            "FCFMargin":           [0.02, 0.05, 0.1, 0.2],
+            "CashConversion":      [0.5, 0.8, 1.0, 1.2],
+            "CapexRatio":          [0.1, 0.2, 0.4, 0.6],   # inverse: lower is better
         }
+
+        # Metrics where a lower value is better: raw digitize score is inverted via 6 - score.
+        _INVERSE_METRICS = frozenset(
+            {"DebtToEquity", "DebtRatio", "NetDebtToEBITDA", "CapexRatio"}
+        )
 
         def score_row(row):
             name, value = row['metrics'], row['value']
@@ -468,8 +569,8 @@ class FundamentalTraderAssistant:
                 return 3
             if name in thresholds:
                 score = np.digitize(value, thresholds[name]) + 1
-                if name == "DebtToEquity":
-                    return 6 - score  # inverse scoring
+                if name in _INVERSE_METRICS:
+                    return 6 - score  # inverse: high raw value → low score
                 return score
             return 3
 
@@ -529,6 +630,90 @@ class FundamentalTraderAssistant:
             return d[d["red_flag"].notna()]
         except Exception as e:
             _logger.error(f"[{self.ticker}] raw_red_flags failed: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def compute_extended_metrics(self) -> pd.DataFrame:
+        """
+        Compute unscored efficiency, growth, and red-flag metrics.
+
+        These metrics are NOT fed into the composite scoring pipeline because they
+        are either time-differential (pct_change) or derived chains (e.g., CCC)
+        that lack universal thresholds appropriate for 1–5 scoring.
+
+        Groups returned
+        ---------------
+        Efficiency chain  : ReceivablesTurnover, DSO, InventoryTurnover, DIO,
+                            PayablesTurnover, DPO, CCC
+        Growth            : RevenueGrowth, NetIncomeGrowth, FCFGrowth
+        Red-flag ratios   : Accruals, DebtGrowth, Dilution, CapexToDepreciation
+
+        Invariant: self.d is sorted by time on a copy before pct_change() to
+        guarantee chronological ordering. self.d is never mutated.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ticker, time, sector + 14 unscored metric columns.
+            Returns an empty DataFrame if an unrecoverable error occurs.
+        """
+        try:
+            # Sort by time on a copy — never mutate self.d.
+            d = self.d.copy().sort_values("time").reset_index(drop=True)
+
+            # Optional columns: use d.get() so that missing columns produce NaN
+            # rather than KeyError (which the broad except would silently swallow).
+            _recv   = d.get("accounts_receivable",               pd.Series(np.nan, index=d.index))
+            _inv    = d.get("inventory",                          pd.Series(np.nan, index=d.index))
+            _pay    = d.get("accounts_payable",                   pd.Series(np.nan, index=d.index))
+            _cogs   = d.get("cost_of_revenue",                    pd.Series(np.nan, index=d.index))
+            _capex  = d.get("capital_expenditure",                pd.Series(np.nan, index=d.index))
+            _da     = d.get("depreciation_amortization_depletion", pd.Series(np.nan, index=d.index))
+            _shares = d.get("ordinary_shares_number",             pd.Series(np.nan, index=d.index))
+
+            # ── Efficiency chain (working-capital turnover) ───────────────────
+            d["ReceivablesTurnover"] = self.safe_div(d["total_revenue"], _recv)
+            d["DSO"]                 = self.safe_div(_recv * 365, d["total_revenue"])
+            d["InventoryTurnover"]   = self.safe_div(_cogs, _inv)
+            d["DIO"]                 = self.safe_div(_inv * 365, _cogs)
+            d["PayablesTurnover"]    = self.safe_div(_cogs, _pay)
+            d["DPO"]                 = self.safe_div(_pay * 365, _cogs)
+            # CCC = DSO + DIO − DPO; NaN if any component is NaN.
+            d["CCC"] = np.where(
+                pd.isna(d["DSO"]) | pd.isna(d["DIO"]) | pd.isna(d["DPO"]),
+                np.nan,
+                d["DSO"] + d["DIO"] - d["DPO"],
+            )
+
+            # ── Growth rates (requires time-sorted data — see sort above) ─────
+            d["RevenueGrowth"]   = d["total_revenue"].pct_change()
+            d["NetIncomeGrowth"] = d["net_income_common_stockholders"].pct_change()
+            d["FCFGrowth"]       = d["free_cash_flow"].pct_change()
+
+            # ── Red-flag ratios ───────────────────────────────────────────────
+            # Accruals > 0 means reported income outpaces cash generation (warning).
+            d["Accruals"] = self.safe_div(
+                d["net_income_common_stockholders"] - d["operating_cash_flow"],
+                d["total_assets"],
+            )
+            d["DebtGrowth"] = d["total_debt"].pct_change()
+            d["Dilution"]   = _shares.pct_change()
+            # capex is typically negative in yfinance; abs() gives the magnitude.
+            d["CapexToDepreciation"] = self.safe_div(_capex.abs(), _da)
+
+            result_cols = [
+                "ReceivablesTurnover", "DSO", "InventoryTurnover", "DIO",
+                "PayablesTurnover", "DPO", "CCC",
+                "RevenueGrowth", "NetIncomeGrowth", "FCFGrowth",
+                "Accruals", "DebtGrowth", "Dilution", "CapexToDepreciation",
+            ]
+            out = d[["ticker", "time"] + result_cols].copy()
+            out["sector"] = self.sector
+            return out
+
+        except Exception as e:
+            _logger.error(
+                f"[{self.ticker}] compute_extended_metrics failed: {e}", exc_info=True
+            )
             return pd.DataFrame()
 
     def metrics_red_flags(self, df):
@@ -639,13 +824,17 @@ class FundamentalTraderAssistant:
             rf = self.metrics_red_flags(m_long)
             self.red_flags = rf[["ticker", "time", "metrics", "red_flag"]]
 
-            # Step 8: Return all results
+            # Step 8: Compute extended (unscored) metrics
+            ext = self.compute_extended_metrics()
+
+            # Step 9: Return all results
             return {
                 "metrics": self.metrics,
                 "eval_metrics": self.eval_metrics,
                 "composite_scores": self.scores,
                 "raw_red_flags": d,
                 "red_flags": self.red_flags,
+                "extended_metrics": ext,
             }
 
         except Exception as e:

@@ -25,15 +25,15 @@ No Makefile, no dedicated lint/format tooling is configured. Add `ruff` or `blac
 This is a **fundamental stock analysis library** that pipelines three concerns:
 
 1. **Data acquisition** — fetch and reshape Yahoo Finance data into long-format DataFrames
-2. **Metric evaluation** — compute and score 11 financial metrics using sector-weighted rubrics
+2. **Metric evaluation** — compute and score 24 financial metrics using sector-weighted rubrics, plus 14 unscored extended metrics
 3. **LLM synthesis** — send scored results to GPT-4.1-nano via LangChain and return a structured `StockRegimeAssessment`
 
 ### Module responsibilities
 
 | Module | Responsibility |
 |---|---|
-| `processor.py` | `RateLimiter` (thread-safe sliding-window), `Downloader` (yfinance fetch + wide→long reshape), `FundamentalTraderAssistant` (metric computation, 1-5 scoring, red-flag detection) |
-| `config.py` | Sector-specific metric weight dicts (`grouped_weights`, `sector_metric_weights`, `sec_sector_metric_weights`). Single source of truth for all scoring weights. No I/O at import time — pure Python dicts. |
+| `processor.py` | `RateLimiter` (thread-safe sliding-window), `Downloader` (yfinance fetch + wide→long reshape), `FundamentalTraderAssistant` (metric computation, 1-5 scoring, extended unscored metrics, red-flag detection) |
+| `config.py` | Sector-specific metric weight dicts (`grouped_weights`, `sector_metric_weights`, `sec_sector_metric_weights`). Single source of truth for all scoring weights. Three private baseline dicts (`_STD_EXT`, `_FIN_EXT`, `_RE_EXT`) DRY-up the 13 new extended-metric keys across all sector entries. No I/O at import time — pure Python dicts. |
 | `utils.py` | I/O helpers (Excel/CSV), ticker/sector lookups (`get_sector_for_ticker`, `get_market_metrics`), DataFrame→JSON conversion, `get_fin_data`, `list_evaluated_tickers` |
 | `tools.py` | `make_tools(base_dir, sector_file)` factory — returns five `@tool` functions with file paths baked in. `TOOLS = make_tools()` is the in-repo default. External consumers call `make_tools(base_dir=..., sector_file=...)` at bootstrap time. All tools return JSON strings, never raise; errors arrive as `{"error": "..."}`. |
 | `wrappers.py` | `DownloaderWrapper` (public download API, logs to `logs/`), `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`), Excel export/read helpers |
@@ -56,15 +56,16 @@ Ticker → Downloader.from_ticker() → yfinance
 ```
 merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises EvaluationError on bad input
   → evaluate()
-      → compute_metrics()           # produces metric columns + sector
-      → compute_valuation_metrics() # P/E, P/B, P/FCF, EarningsYield → self.eval_metrics
-      → raw_red_flags()             # cash-flow red flags
+      → compute_metrics()              # produces 24 scored metric columns + sector
+      → compute_valuation_metrics()    # P/E, P/B, P/FCF, EarningsYield → self.eval_metrics
+      → raw_red_flags()                # cash-flow red flags
       → melt(value_vars=<dynamic: all non-id cols from compute_metrics()>) → m_long
-      → score_metric(m_long)        # 1–5 per metric (returns copy — does not mutate input)
-      → merge(self.weights)         # adds sector + weights columns; warns on NaN weights
-      → _compute_composite_scores() # → self.scores (wide: sector, ticker, time, composite_score)
-      → metrics_red_flags(m_long)   # → self.red_flags (returns copy — does not mutate input)
-      → returns dict with keys: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags
+      → score_metric(m_long)           # 1–5 per metric (returns copy — does not mutate input)
+      → merge(self.weights)            # adds sector + weights columns; warns on NaN weights
+      → _compute_composite_scores()    # → self.scores (wide: sector, ticker, time, composite_score)
+      → metrics_red_flags(m_long)      # → self.red_flags (returns copy — does not mutate input)
+      → compute_extended_metrics()     # 14 unscored metrics (efficiency chain, growth, red-flag ratios)
+      → returns dict with keys: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
       → on any failure: returns _empty_result() (all keys, fresh empty DataFrames) + logs error
   → compute_scores()            # standalone: melt(dynamic cols) → score_metric → self.metric_scores
                                 #   (long format, one row per ticker/time/metric — NOT self.scores)
@@ -122,10 +123,23 @@ score = sum(metric_score_i * weight_i) / sum(weight_i)
 ```
 where `metric_score_i ∈ {1, 2, 3, 4, 5}`. Higher is better. Sector weights come from `config.sector_metric_weights`; fall back to `config.grouped_weights` if the sector is not mapped.
 
-The 11 scored metrics are the columns produced by `compute_metrics()`:
-`GrossMargin, OperatingMargin, NetProfitMargin, EBITDAMargin, ROA, ROE, FCFToRevenue, FCFYield, FCFtoDebt, DebtToEquity, CurrentRatio`
+**24 scored metrics** are the columns produced by `compute_metrics()`:
 
-`SCORED_METRICS` (module-level constant in `processor.py`) lists the same names for reference, but `evaluate()` and `compute_scores()` derive `value_vars` dynamically from `compute_metrics()` output columns — adding a metric to `compute_metrics()` automatically includes it in scoring without touching `SCORED_METRICS`.
+*Original 11:* `GrossMargin, OperatingMargin, NetProfitMargin, EBITDAMargin, ROA, ROE, FCFToRevenue, FCFYield, FCFtoDebt, DebtToEquity, CurrentRatio`
+
+*Extended 13:* `QuickRatio, CashRatio, WorkingCapitalRatio, DebtRatio, EquityRatio, NetDebtToEBITDA, InterestCoverage, ROIC, AssetTurnover, OCFRatio, FCFMargin, CashConversion, CapexRatio`
+
+Four of these use **inverse scoring** (lower value → higher score): `DebtToEquity`, `DebtRatio`, `NetDebtToEBITDA`, `CapexRatio`. The set is declared as `_INVERSE_METRICS` inside `score_metric()`.
+
+`SCORED_METRICS` (module-level constant in `processor.py`) lists all 24 names for reference, but `evaluate()` and `compute_scores()` derive `value_vars` dynamically from `compute_metrics()` output columns — adding a metric to `compute_metrics()` automatically includes it in scoring without touching `SCORED_METRICS`.
+
+**14 unscored extended metrics** are computed by `compute_extended_metrics()` and returned under the `"extended_metrics"` key. They are NOT fed into the composite score because they are time-differential (`pct_change`) or derived chains that lack universal thresholds:
+
+*Efficiency chain:* `ReceivablesTurnover, DSO, InventoryTurnover, DIO, PayablesTurnover, DPO, CCC`
+*Growth:* `RevenueGrowth, NetIncomeGrowth, FCFGrowth`
+*Red-flag ratios:* `Accruals, DebtGrowth, Dilution, CapexToDepreciation`
+
+`compute_extended_metrics()` sorts a copy of `self.d` by `time` before calling `pct_change()` — `self.d` is never mutated.
 
 ### Exceptions
 
@@ -148,5 +162,8 @@ All modules use `logging.getLogger(__name__)`. `wrappers.py` is the only module 
 | Empty `composite_scores` DataFrame | `logs/error.log` — check for `evaluate() failed` or `compute_valuation_metrics failed` |
 | `EvaluationError` on `FundamentalTraderAssistant` | `data` has empty/multi/NaN ticker, or `weights` has empty/multi/NaN sector |
 | `SectorNotFoundError` | Ticker not in `financialtools/data/sector_ticker.txt`, or sector missing from benchmark Excel file |
+| New extended-metric columns all NaN | Optional source column absent for that ticker (e.g. `inventory`, `invested_capital`, `ebit`); logged as warning — not an error |
+| `extended_metrics` key missing from `evaluate()` result | `_EMPTY_RESULT_KEYS` was not updated — must contain `"extended_metrics"` |
+| Growth rates in wrong order | `compute_extended_metrics()` sorts by `time` before `pct_change()` — check whether input `time` values are parseable strings or timestamps |
 | LLM returns unexpected output | `OutputFixingParser` is the recovery path — check `chains.py`; note `format_instructions` has no placeholder in the prompt (TODO in `chains.py`) |
 | Logs written to wrong directory | Confirm `wrappers.py` is imported from the package, not copied — `_LOGS_DIR` is `__file__`-relative |
