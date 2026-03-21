@@ -16,13 +16,18 @@ Requires a `.env` file with `OPENAI_API_KEY` for the LLM report step.
 
 ```python
 from financialtools.wrappers import DownloaderWrapper, FundamentalEvaluator
-from financialtools.chains import get_stock_evaluation_report
+from financialtools.analysis import run_topic_analysis
 
-# 1 — Download financial data for a ticker
-wrapper = DownloaderWrapper()
-df = wrapper.download_data(["AAPL"])
+# 1 — Self-contained: download + evaluate + 8 LLM chains in one call
+result = run_topic_analysis("AAPL", sector="Technology", year=2023)
+print(result.regime.regime)        # "bull" | "bear"
+print(result.liquidity.rating)     # "strong" | "adequate" | "weak"
+print(result.red_flags.severity)   # "none" | "low" | "moderate" | "high"
 
-# 2 — Evaluate fundamentals (parallel across tickers)
+# 2 — Download only
+df = DownloaderWrapper.download_data("AAPL")
+
+# 3 — Evaluate only (no LLM)
 import pandas as pd
 from financialtools.config import sector_metric_weights
 
@@ -33,27 +38,29 @@ weights = (
 )
 evaluator = FundamentalEvaluator(df=df, weights=weights)
 results = evaluator.evaluate_multiple(["AAPL"])
-
-# 3 — Generate LLM regime report
-report = get_stock_evaluation_report("AAPL", year=2023)
-print(report.regime)          # "bull" | "bear"
-print(report.regime_rationale)
 ```
 
 ## Package layout
 
+**Package (`financialtools/`):**
+
 | Module | Responsibility |
 |---|---|
 | `processor.py` | `RateLimiter`, `Downloader`, `FundamentalTraderAssistant` |
-| `wrappers.py` | `DownloaderWrapper`, `FundamentalEvaluator`, file I/O helpers |
-| `chains.py` | LangChain pipeline → `StockRegimeAssessment` (reads from Excel output files) |
-| `analysis.py` | `run_topic_analysis()` — single-ticker end-to-end pipeline (download → evaluate → 8 LLM chains) returning `TopicAnalysisResult` |
+| `wrappers.py` | `DownloaderWrapper`, `FundamentalEvaluator`, Excel export/read helpers |
+| `analysis.py` | `run_topic_analysis()` — self-contained pipeline (download → evaluate → 8 LLM chains) returning `TopicAnalysisResult` |
 | `config.py` | Sector weight dicts (single source of truth) |
-| `utils.py` | I/O helpers, ticker/sector lookups, `get_fin_data`, `list_evaluated_tickers` |
-| `tools.py` | Five `@tool` functions for LangChain/LangGraph agents |
+| `utils.py` | I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`), yfinance profile helpers |
 | `prompts.py` | `build_prompt()` + `build_topic_prompt()` factories + 13 prompt constants |
 | `pydantic_models.py` | `StockRegimeAssessment` (regime/valuation); 7 topic models (`LiquidityAssessment` … `RedFlagsAssessment`); `ComprehensiveStockAssessment` |
 | `exceptions.py` | `FinancialToolsError`, `DownloadError`, `EvaluationError`, `SectorNotFoundError` |
+
+**Repo root (not part of the installable package):**
+
+| File | Responsibility |
+|---|---|
+| `chains.py` | LangChain pipeline → `StockRegimeAssessment` (reads from pre-computed Excel output files) |
+| `tools.py` | `get_stock_regime_report` `@tool` for LangChain/LangGraph agents; `make_tools(base_dir)` factory |
 
 ## Key classes
 
@@ -102,20 +109,21 @@ results = evaluator.evaluate_multiple(tickers, parallel=True)
 
 Uses `ThreadPoolExecutor` for parallel evaluation. Failed tickers return `_empty_result()` and are logged — they do not abort the batch.
 
-### `get_stock_evaluation_report` (`chains.py`)
+### `get_stock_evaluation_report` (`chains.py`, repo root)
 
 ```python
+from chains import get_stock_evaluation_report
+
 report = get_stock_evaluation_report(
     "AAPL",
-    year=2023,
-    base_dir="financial_data",          # directory containing *.xlsx outputs
-    sector_file="financialtools/data/sector_ticker.txt",  # ticker→sector mapping
+    sector="Technology",       # required — caller supplies the sector
+    year=2023,                 # optional
+    base_dir="financial_data", # directory containing *.xlsx outputs
 )
 # report: StockRegimeAssessment
 ```
 
-Reads from `base_dir/*.xlsx`, fetches sector benchmarks, calls `gpt-4.1-nano` via LangChain.
-External consumers pass their own `base_dir` and `sector_file` paths.
+Reads from `base_dir/*.xlsx`, calls `gpt-4.1-nano` via LangChain. Requires pre-computed Excel files from `export_financial_results()`. Use `run_topic_analysis()` instead if you don't have pre-computed files.
 
 ### `run_topic_analysis` (`analysis.py`)
 
@@ -143,19 +151,6 @@ Runs three stages in one call: download → `FundamentalTraderAssistant.evaluate
 `result.to_dict()` serialises all Pydantic assessments to plain dicts via `.model_dump()`.
 
 Individual topic fields are `None` when the corresponding chain fails; errors are logged as WARNING and processing continues.
-
-### `get_fin_data` (`utils.py`)
-
-```python
-metrics_json, composite_json, red_flags_json = get_fin_data(
-    ticker="AAPL",
-    year=2023,                    # optional — filters metrics and red flags
-    base_dir="financial_data",    # default: runtime output dir
-    round_metrics=False,          # set True for 2-decimal rounding
-)
-```
-
-`get_fin_data_year(ticker, year)` is a backward-compatible alias that sets `base_dir="financial_data"` and `round_metrics=True`.
 
 ## Exceptions
 
@@ -206,38 +201,25 @@ prompt = build_topic_prompt("liquidity")   # or solvency / profitability / effic
 - `system_prompt_red_flags` → `RedFlagsAssessment`
 - `system_prompt_comprehensive` → `ComprehensiveStockAssessment`
 
-## LangChain / LangGraph agent (`tools.py`)
+## LangChain / LangGraph agent (`tools.py`, repo root)
 
-Five `@tool` functions expose the full pipeline to a ReAct agent:
+One `@tool` function exposes the Excel-based pipeline to a ReAct agent:
 
 | Tool | Description |
 |---|---|
-| `list_available_tickers()` | Sorted list of evaluated tickers from `composite_scores.xlsx` |
-| `get_stock_metrics(ticker, year?)` | Metrics + composite score + red flags as JSON |
-| `get_sector_benchmarks(sector)` | Peer-average financial and valuation metrics |
-| `get_red_flags(ticker)` | Red-flag warnings across all years |
-| `get_stock_regime_report(ticker, year?)` | Full LLM bull/bear assessment via `chains.py` |
+| `get_stock_regime_report(ticker, sector, year?)` | Full LLM bull/bear assessment via `chains.py` |
 
-All tools return JSON strings and never raise — errors arrive as `{"error": "..."}`.
+Returns a JSON string; never raises — errors arrive as `{"error": "..."}`.
 
-File paths (data directory, sector mapping file) are **deployment config, not agent
-decisions** — bake them in at bootstrap time via `make_tools()`, never expose them
-as tool parameters.
+`base_dir` is **deployment config, not an agent decision** — bake it in at bootstrap time via `make_tools()`.
 
 ```python
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from financialtools.tools import make_tools
+from tools import make_tools
 
-# In-repo default (financial_data/ relative to CWD):
-# from financialtools.tools import TOOLS
-
-# External consumer — explicit paths:
-tools = make_tools(
-    base_dir="/path/to/my/financial_data",
-    sector_file="/path/to/my/sector_ticker.txt",
-)
+tools = make_tools(base_dir="/path/to/my/financial_data")
 
 agent = create_agent(
     model=ChatOpenAI(model="gpt-4o"),
@@ -246,7 +228,7 @@ agent = create_agent(
 )
 config = {"configurable": {"thread_id": "my-session"}, "recursion_limit": 20}
 result = agent.invoke(
-    {"messages": [{"role": "user", "content": "Assess AAPL for 2023"}]},
+    {"messages": [{"role": "user", "content": "Assess AAPL Technology for 2023"}]},
     config=config,
 )
 print(result["messages"][-1].content)
@@ -298,9 +280,8 @@ LANGSMITH_PROJECT=financialtools   # optional, defaults to "default"
 
 | Path | Contents |
 |---|---|
-| `financial_data/` | Excel outputs from `export_financial_results()` and sector benchmark files |
+| `financial_data/` | Excel outputs from `export_financial_results()` (required by `chains.py`) |
 | `logs/` | `info.log`, `error.log`, `debug.log` — anchored to the package root, not the caller's cwd |
-| `financialtools/data/weights.xlsx` | Optional external sector weights file (loaded by callers, not by the package itself) |
 
 ## Running tests
 

@@ -40,5 +40,5 @@ class SectorNotFoundError(FinancialToolsError, ValueError):
     Inherits from ValueError so existing `except ValueError` catch-sites
     continue to work without modification.
 
-    Typical sites: get_sector_for_ticker(), get_market_metrics()
+    Typical sites: chains.get_stock_evaluation_report() (via get_market_metrics in tools.py)
     """

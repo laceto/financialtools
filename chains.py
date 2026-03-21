@@ -1,5 +1,3 @@
-import os
-
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,37 +8,34 @@ from langchain_openai import ChatOpenAI
 from financialtools.wrappers import read_financial_results
 from financialtools.pydantic_models import StockRegimeAssessment
 from financialtools.prompts import system_prompt_StockRegimeAssessment
-from financialtools.utils import get_sector_for_ticker, get_market_metrics, dataframe_to_json
+from financialtools.utils import dataframe_to_json
 
 def get_stock_evaluation_report(
     ticker: str,
+    sector: str,
     year: int | None = None,
     base_dir: str = "financial_data",
-    sector_file: str = "financialtools/data/sector_ticker.txt",
 ) -> "StockRegimeAssessment":
     """
     Run the full LLM fundamental regime assessment for a ticker.
 
     Args:
-        ticker:      Ticker symbol (e.g. "AAPL", "ENI.MI").
-        year:        Optional year to focus the assessment on. If None, uses all years.
-        base_dir:    Directory containing the evaluation output files
-                     (metrics.xlsx, composite_scores.xlsx, red_flags.xlsx,
-                     raw_red_flags.xlsx, eval_metrics.xlsx,
-                     metrics_by_sectors.xlsx, eval_metrics_by_sectors.xlsx).
-                     Defaults to "financial_data" (relative to CWD).
-        sector_file: Path to the tab-separated sector mapping file
-                     (columns: ticker, sector, name, marginabile).
-                     External consumers should pass the path to their own copy.
-                     Defaults to the bundled "financialtools/data/sector_ticker.txt".
+        ticker:   Ticker symbol (e.g. "AAPL", "ENI.MI").
+        sector:   Sector name matching a key in config.sector_metric_weights,
+                  e.g. "Technology", "Energy", "Finance".
+        year:     Optional year to focus the assessment on. If None, uses all years.
+        base_dir: Directory containing the evaluation output files
+                  (metrics.xlsx, composite_scores.xlsx, red_flags.xlsx,
+                  raw_red_flags.xlsx, eval_metrics.xlsx,
+                  metrics_by_sectors.xlsx, eval_metrics_by_sectors.xlsx).
+                  Defaults to "financial_data" (relative to CWD).
 
     Returns:
         StockRegimeAssessment Pydantic model.
 
     Raises:
-        FileNotFoundError:   if base_dir or sector_file does not exist.
-        SectorNotFoundError: if ticker is absent from sector_file, or sector
-                             is absent from the benchmark Excel files.
+        FileNotFoundError:   if base_dir does not exist.
+        SectorNotFoundError: if sector is absent from the benchmark Excel files.
     """
     kwargs = {
         "ticker": ticker,
@@ -53,21 +48,9 @@ def get_stock_evaluation_report(
 
     metrics, eval_metrics, composite_scores, red_flags = read_financial_results(**kwargs)
 
-    sector = get_sector_for_ticker(ticker, sector_file=sector_file)
-
-    market_metrics = get_market_metrics(
-        file_path=os.path.join(base_dir, "metrics_by_sectors.xlsx"),
-        sector=sector,
-    )
-
-    eval_market_metrics = get_market_metrics(
-        file_path=os.path.join(base_dir, "eval_metrics_by_sectors.xlsx"),
-        sector=sector,
-    )
-    
-    metrics, eval_metrics, composite_scores, red_flags, market_metrics, eval_market_metrics = [
+    metrics, eval_metrics, composite_scores, red_flags = [
         dataframe_to_json(df)
-        for df in [metrics, eval_metrics, composite_scores, red_flags, market_metrics, eval_market_metrics]
+        for df in [metrics, eval_metrics, composite_scores, red_flags]
     ]
 
     
@@ -91,7 +74,7 @@ def get_stock_evaluation_report(
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt_filled),
-        ("human", "Metrics:\n{metrics}\nScores:\n{composite_scores}\nEvaluation Metrics:\n{eval_metrics}\nRedFlags:\n{red_flags}\nMarket metrics:{market_metrics}\nMarket evaluation metrics:{eval_market_metrics}"),
+        ("human", "Metrics:\n{metrics}\nScores:\n{composite_scores}\nEvaluation Metrics:\n{eval_metrics}\nRedFlags:\n{red_flags}"),
     ])
 
     # Create a runnable chain: prompt followed by LLM invocation
@@ -100,12 +83,10 @@ def get_stock_evaluation_report(
 
     # Then invoke with a dict containing 'financial_data'
     response = chain.invoke({
-        "metrics": metrics,  
+        "metrics": metrics,
         "eval_metrics": eval_metrics,
         "composite_scores": composite_scores,
-        "red_flags": red_flags,   
-        "market_metrics": market_metrics, 
-        "eval_market_metrics": eval_market_metrics
+        "red_flags": red_flags,
     })
 
     
