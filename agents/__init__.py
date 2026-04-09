@@ -1,23 +1,26 @@
 """
-agents — Financial Analysis Manager and topic subagents.
+agents — Financial Analysis Manager workflow.
 
 Public API
 ----------
-create_financial_manager(model, checkpointer) → Deep Agent
+create_financial_manager(model, checkpointer) → compiled LangGraph StateGraph
 
 Usage
 -----
     from agents import create_financial_manager
 
-    agent = create_financial_manager()
+    agent  = create_financial_manager()
     config = {"configurable": {"thread_id": "session-1"}}
 
     result = agent.invoke(
-        {"messages": [{"role": "user", "content":
-            "Analyse AAPL for sector Technology, year 2023"}]},
+        {"ticker": "AAPL", "year": 2023},
         config=config,
     )
-    print(result["messages"][-1].content)
+    print(result["final_report"])
+
+    # Streaming intermediate state updates:
+    for chunk in agent.stream({"ticker": "AAPL"}, config=config, stream_mode="values"):
+        print(chunk)
 """
 
 from agents.financial_agent import create_financial_manager

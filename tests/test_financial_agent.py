@@ -111,7 +111,7 @@ class TestCacheUtils(unittest.TestCase):
 class TestPrepareFinancialDataTool(unittest.TestCase):
     """Verify the data preparation tool's error handling."""
 
-    def _call_tool(self, ticker: str, sector: str, year=None) -> dict:
+    def _call_tool(self, ticker: str, sector: str | None = None, year=None) -> dict:
         """Invoke the tool and parse its JSON return value."""
         from agents._tools.data_tools import prepare_financial_data
         raw = prepare_financial_data.invoke({"ticker": ticker, "sector": sector, "year": year})
@@ -171,6 +171,58 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         mock_write.assert_called_once()
 
+    @patch("agents._tools.data_tools.write_payloads")
+    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.Downloader")
+    def test_sector_auto_detected_from_info(self, MockDownloader, MockFTA, mock_write):
+        """When sector=None, sector is read from get_info_data()['sector']."""
+        mock_d = MagicMock()
+        mock_d.get_merged_data.return_value = pd.DataFrame({"ticker": ["AAPL"]})
+        mock_d.get_info_data.return_value = pd.DataFrame({"sector": ["Technology Services"]})
+        MockDownloader.from_ticker.return_value = mock_d
+
+        empty_df = pd.DataFrame()
+        mock_fta_instance = MagicMock()
+        mock_fta_instance.evaluate.return_value = {
+            "metrics":          empty_df,
+            "extended_metrics": empty_df,
+            "eval_metrics":     empty_df,
+            "composite_scores": empty_df,
+            "red_flags":        empty_df,
+        }
+        MockFTA.return_value = mock_fta_instance
+
+        result = self._call_tool("AAPL", sector=None)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["sector"], "technology-services")
+
+    @patch("agents._tools.data_tools.write_payloads")
+    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.Downloader")
+    def test_sector_falls_back_to_default_when_info_missing(self, MockDownloader, MockFTA, mock_write):
+        """When sector=None and info has no 'sector' column, sector defaults to 'Default'."""
+        mock_d = MagicMock()
+        mock_d.get_merged_data.return_value = pd.DataFrame({"ticker": ["AAPL"]})
+        mock_d.get_info_data.return_value = pd.DataFrame()  # empty — no sector column
+        MockDownloader.from_ticker.return_value = mock_d
+
+        empty_df = pd.DataFrame()
+        mock_fta_instance = MagicMock()
+        mock_fta_instance.evaluate.return_value = {
+            "metrics":          empty_df,
+            "extended_metrics": empty_df,
+            "eval_metrics":     empty_df,
+            "composite_scores": empty_df,
+            "red_flags":        empty_df,
+        }
+        MockFTA.return_value = mock_fta_instance
+
+        result = self._call_tool("AAPL", sector=None)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result["sector"], "Default")
+
 
 class TestTopicTools(unittest.TestCase):
     """Verify all 7 topic tools are wired and handle missing cache gracefully."""
@@ -201,37 +253,35 @@ class TestTopicTools(unittest.TestCase):
 
 
 class TestSubagents(unittest.TestCase):
-    """Verify subagent configuration completeness."""
+    """Verify topic subgraph construction."""
 
-    def test_seven_subagents_built(self):
-        from agents._subagents import build_topic_subagents
-        subagents = build_topic_subagents()
-        self.assertEqual(len(subagents), 7)
+    def test_seven_subgraphs_built(self):
+        """build_topic_subgraphs() must return exactly 7 compiled graphs."""
+        from agents._subagents import build_topic_subgraphs
+        subgraphs = build_topic_subgraphs()
+        self.assertEqual(len(subgraphs), 7)
 
-    def test_required_keys_present(self):
-        from agents._subagents import TOPIC_SUBAGENTS
-        required_keys = {"name", "description", "system_prompt", "tools", "model"}
-        for sa in TOPIC_SUBAGENTS:
-            with self.subTest(name=sa.get("name")):
-                self.assertEqual(required_keys, set(sa.keys()))
+    def test_subgraph_keys_match_topic_names(self):
+        """Keys must exactly match TOPIC_NAMES."""
+        from agents._subagents import TOPIC_NAMES, build_topic_subgraphs
+        subgraphs = build_topic_subgraphs()
+        self.assertEqual(set(subgraphs.keys()), set(TOPIC_NAMES))
 
-    def test_each_subagent_has_one_tool(self):
-        from agents._subagents import TOPIC_SUBAGENTS
-        for sa in TOPIC_SUBAGENTS:
-            with self.subTest(name=sa["name"]):
-                self.assertEqual(len(sa["tools"]), 1)
-
-    def test_subagent_names_are_unique(self):
-        from agents._subagents import TOPIC_SUBAGENTS
-        names = [sa["name"] for sa in TOPIC_SUBAGENTS]
-        self.assertEqual(len(names), len(set(names)))
+    def test_each_subgraph_is_compiled(self):
+        """Each value must be a compiled LangGraph (has .invoke)."""
+        from agents._subagents import build_topic_subgraphs
+        subgraphs = build_topic_subgraphs()
+        for topic, sg in subgraphs.items():
+            with self.subTest(topic=topic):
+                self.assertTrue(callable(getattr(sg, "invoke", None)),
+                                f"{topic} subgraph missing .invoke()")
 
 
 class TestManagerAgent(unittest.TestCase):
-    """Smoke tests for manager agent construction."""
+    """Smoke tests for the LangGraph StateGraph manager."""
 
     def test_create_financial_manager_returns_agent(self):
-        """create_financial_manager() must complete without raising."""
+        """create_financial_manager() must compile without raising."""
         from agents.financial_agent import create_financial_manager
         agent = create_financial_manager()
         self.assertIsNotNone(agent)
@@ -241,6 +291,23 @@ class TestManagerAgent(unittest.TestCase):
         from agents.financial_agent import create_financial_manager
         agent = create_financial_manager(model="gpt-4.1-nano")
         self.assertIsNotNone(agent)
+
+    def test_agent_has_invoke(self):
+        """Compiled graph must expose .invoke() and .stream()."""
+        from agents.financial_agent import create_financial_manager
+        agent = create_financial_manager()
+        self.assertTrue(callable(getattr(agent, "invoke", None)))
+        self.assertTrue(callable(getattr(agent, "stream", None)))
+
+    def test_agent_graph_nodes_include_all_topics(self):
+        """Compiled graph must contain a node for every topic analyst."""
+        from agents._subagents import TOPIC_NAMES
+        from agents.financial_agent import create_financial_manager
+        agent = create_financial_manager()
+        node_names = set(agent.get_graph().nodes.keys())
+        for topic in TOPIC_NAMES:
+            with self.subTest(topic=topic):
+                self.assertIn(f"{topic}_analyst", node_names)
 
 
 if __name__ == "__main__":

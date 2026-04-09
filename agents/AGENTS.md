@@ -1,32 +1,24 @@
 # Financial Analysis Agent System
 
 > **Module:** `agents/`
-> **Added:** March 2026
 > **Entry point:** `from agents import create_financial_manager`
 
 ---
 
 ## Overview
 
-The `agents/` package implements a **manager + specialist subagent** architecture built on [Deep Agents](https://github.com/anthropics/deep-agents).
+The `agents/` package implements a **manager + 7 specialist subgraph** architecture built on **LangGraph's native `StateGraph`**.
 
-A single **Financial Analysis Manager** orchestrates seven **topic subagents**, each responsible for exactly one area of fundamental analysis. The manager downloads and evaluates financial data once, serialises the results to a **disk cache**, then delegates LLM analysis in parallel to each specialist. This design avoids redundant yfinance calls and keeps subagents completely stateless.
+A single `AnalysisState` flows through the main graph. After a data preparation node writes the cache, seven topic subgraphs execute **in parallel**, each appending its result to state. A final compile node synthesises all results into a structured markdown report.
 
 ```
-Financial Analysis Manager (Deep Agent)
-├── Tool: prepare_financial_data         ← downloads + evaluates, writes cache
-├── Subagents (7 topic specialists)
-│   ├── liquidity_analyst    → run_liquidity_analysis
-│   ├── solvency_analyst     → run_solvency_analysis
-│   ├── profitability_analyst → run_profitability_analysis
-│   ├── efficiency_analyst   → run_efficiency_analysis
-│   ├── cash_flow_analyst    → run_cash_flow_analysis
-│   ├── growth_analyst       → run_growth_analysis
-│   └── red_flags_analyst    → run_red_flags_analysis
-└── Built-in (Deep Agents harness)
-    ├── write_todos           ← task planning
-    ├── task                  ← subagent delegation
-    └── filesystem tools      ← ls, read_file, write_file, …
+START ──► prepare_data ──┬──► liquidity_analyst  ──┐
+                         ├──► solvency_analyst   ──┤
+                         ├──► profitability_analyst─┤
+                         ├──► efficiency_analyst ──┤  (parallel)
+                         ├──► cash_flow_analyst  ──┤
+                         ├──► growth_analyst     ──┤
+                         └──► red_flags_analyst  ──┴──► compile_report ──► END
 ```
 
 ---
@@ -36,10 +28,12 @@ Financial Analysis Manager (Deep Agent)
 | File | Responsibility |
 |---|---|
 | `__init__.py` | Re-exports `create_financial_manager` as the public API |
-| `financial_agent.py` | Manager factory (`create_financial_manager`), system prompt |
-| `_subagents.py` | `build_topic_subagents()` — builds the seven subagent dicts |
-| `_tools/data_tools.py` | `prepare_financial_data` tool (manager only) |
-| `_tools/topic_tools.py` | Seven `run_*_analysis` tools (one per subagent) + `TOPIC_TOOLS` map |
+| `financial_agent.py` | Main `StateGraph` factory (`create_financial_manager`) |
+| `graph_state.py` | `AnalysisState` TypedDict — shared state schema |
+| `graph_nodes.py` | `prepare_data_node`, `create_topic_subgraph(topic)`, `compile_report_node` |
+| `_subagents.py` | `TOPIC_NAMES` list + `build_topic_subgraphs()` — compiles 7 topic subgraphs |
+| `_tools/data_tools.py` | `prepare_financial_data` LangChain tool (called by `prepare_data_node`) |
+| `_tools/topic_tools.py` | Seven `run_*_analysis` tools + `TOPIC_TOOLS` map (called by topic subgraphs) |
 | `_cache.py` | Disk-based payload cache — `cache_key`, `write_payloads`, `read_payloads`, `write_topic_result`, `read_topic_result` |
 
 ---
@@ -47,36 +41,34 @@ Financial Analysis Manager (Deep Agent)
 ## Orchestration Flow
 
 ```
-1. User sends request: "Analyse AAPL for sector Technology, year 2023"
-   │
-2. Manager plans 9 todos (via write_todos):
-   │   "Prepare financial data", "Liquidity analysis", … , "Compile final report"
-   │
-3. Manager calls prepare_financial_data(ticker="AAPL", sector="Technology", year=2023)
+1. Caller invokes: agent.invoke({"ticker": "AAPL", "year": 2023}, config=...)
+
+2. set_model node     → injects model name into state
+
+3. prepare_data node  → calls prepare_financial_data(ticker, sector, year)
    │   → Downloader.from_ticker("AAPL").get_merged_data()
    │   → FundamentalTraderAssistant.evaluate()  [24 scored + 14 unscored metrics]
    │   → normalise_time + filter_year
    │   → writes agents/.cache/AAPL_2023/payloads.json
-   │   → returns {"cache_key": "AAPL_2023", "status": "ready"}
-   │
-4. Manager delegates each topic:
-   │   task(agent="liquidity_analyst",
-   │        instruction="Run liquidity analysis. cache_key=AAPL_2023. Return full JSON.")
-   │   … (×7 topics)
-   │
-5. Each subagent:
-   │   → reads agents/.cache/AAPL_2023/payloads.json
-   │   → invokes its LangChain topic chain (with one-shot fix retry)
+   │   → state ← {cache_key, company_name, resolved_sector}
+
+4. 7 topic subgraphs run in parallel, each:
+   │   → reads state["cache_key"]
+   │   → calls run_{topic}_analysis(cache_key=...)
+   │   → invokes LangChain topic chain (with one-shot fix retry)
    │   → writes agents/.cache/AAPL_2023/{topic}.json
-   │   → returns assessment JSON to manager
-   │
-6. Manager compiles structured markdown report:
-       Overall regime signal · Per-topic summaries · Top 3 concerns
+   │   → state ← {topic}_result: {...}
+
+5. compile_report node (runs after all 7 complete)
+   │   → LLM call with all 7 topic results
+   │   → state ← {final_report: "## Overall Assessment ..."}
+
+6. result["final_report"] is the structured markdown report
 ```
 
 ---
 
-## Manager Agent
+## Public API
 
 **Source:** `agents/financial_agent.py`
 
@@ -86,172 +78,129 @@ Financial Analysis Manager (Deep Agent)
 create_financial_manager(
     model: str = "gpt-4.1-nano",
     checkpointer = None,          # defaults to MemorySaver()
-) -> LangGraph Runnable
+) -> CompiledStateGraph
 ```
-
-**Args:**
-
-| Param | Default | Description |
-|---|---|---|
-| `model` | `"gpt-4.1-nano"` | LLM used by both the manager and all subagents |
-| `checkpointer` | `MemorySaver()` | LangGraph checkpointer for session continuity. Pass `SqliteSaver` or `PostgresSaver` for durable persistence across process restarts |
-
-**Returns:** A compiled Deep Agent (LangGraph `Runnable`).
 
 ### Usage
 
 ```python
 from agents import create_financial_manager
 
-agent = create_financial_manager()
+agent  = create_financial_manager()
+config = {"configurable": {"thread_id": "session-1"}}
 
+# Blocking invoke
 result = agent.invoke(
-    {"messages": [{"role": "user", "content":
-        "Analyse AAPL for sector Technology, year 2023"}]},
-    config={"configurable": {"thread_id": "session-1"}},
+    {"ticker": "AAPL", "year": 2023},
+    config=config,
 )
-print(result["messages"][-1].content)
+print(result["final_report"])
+
+# Streaming intermediate updates
+for chunk in agent.stream({"ticker": "AAPL"}, config=config, stream_mode="values"):
+    print(chunk)
 ```
 
-**`thread_id`** identifies the session. Reuse the same ID across calls to maintain conversation continuity within the checkpointer's scope.
+**Input keys:**
 
-### System Prompt Behaviour
-
-The manager is instructed to:
-1. Always start with a 9-task plan via `write_todos`.
-2. Call `prepare_financial_data` before any subagent delegation.
-3. Include the `cache_key` in every subagent instruction (it is required for cache reads).
-4. Delegate all 7 topics — no topics may be skipped.
-5. Compile results into a structured markdown report with regime signal, per-topic summaries, and top concerns.
+| Key | Type | Required | Description |
+|---|---|---|---|
+| `ticker` | `str` | Yes | Ticker symbol, e.g. `"AAPL"` |
+| `sector` | `str \| None` | No | yfinance sectorKey (e.g. `"technology"`). Auto-detected if omitted. |
+| `year` | `int \| None` | No | Filter to a single year. None = all available periods. |
+| `model` | `str` | No | Override LLM model. Defaults to `"gpt-4.1-nano"`. |
 
 ---
 
-## Subagents
+## State Schema
 
-**Source:** `agents/_subagents.py`
-
-### Factory
+**Source:** `agents/graph_state.py`
 
 ```python
-build_topic_subagents(model: str = "gpt-4.1-nano") -> list[dict]
+class AnalysisState(TypedDict, total=False):
+    # Inputs
+    ticker: str
+    sector: str | None
+    year:   int | None
+    model:  str
+    # After prepare_data
+    cache_key:       str
+    company_name:    str      # lowercased longName, e.g. "apple inc."
+    resolved_sector: str      # final sector used (auto-detected or caller-supplied)
+    # Topic results
+    liquidity_result:     dict | None
+    solvency_result:      dict | None
+    profitability_result: dict | None
+    efficiency_result:    dict | None
+    cash_flow_result:     dict | None
+    growth_result:        dict | None
+    red_flags_result:     dict | None
+    # Final output
+    final_report: str
 ```
 
-Returns a list of 7 subagent dicts accepted by `create_deep_agent(subagents=...)`.
+---
 
-Each dict has the shape:
+## Subgraphs
 
-```python
-{
-    "name":          str,   # e.g. "liquidity_analyst"
-    "description":   str,   # used by the manager to pick the right specialist
-    "system_prompt": str,   # role + tool usage instruction
-    "model":         str,
-    "tools":         [tool_fn],  # exactly one tool per subagent
-}
+**Source:** `agents/_subagents.py`, `agents/graph_nodes.py`
+
+Each topic subgraph is a compiled `StateGraph(AnalysisState)` with a single node:
+
+```
+START → run_analysis → END
 ```
 
-### Subagent Inventory
+`run_analysis` reads `state["cache_key"]`, calls `TOPIC_TOOLS[topic].invoke(...)`, and writes `state["{topic}_result"]`.
 
-| Subagent | Metrics covered | Tool |
+| Subgraph node | Tool called | State key written |
 |---|---|---|
-| `liquidity_analyst` | CurrentRatio, QuickRatio, CashRatio, WorkingCapitalRatio; DSO, DIO, DPO, CCC | `run_liquidity_analysis` |
-| `solvency_analyst` | DebtToEquity, DebtRatio, EquityRatio, NetDebtToEBITDA, InterestCoverage; DebtGrowth | `run_solvency_analysis` |
-| `profitability_analyst` | GrossMargin, OperatingMargin, NetProfitMargin, EBITDAMargin, ROA, ROE, ROIC; Accruals | `run_profitability_analysis` |
-| `efficiency_analyst` | AssetTurnover; ReceivablesTurnover, DSO, InventoryTurnover, DIO, PayablesTurnover, DPO, CCC | `run_efficiency_analysis` |
-| `cash_flow_analyst` | FCFToRevenue, FCFYield, FCFtoDebt, OCFRatio, FCFMargin, CashConversion, CapexRatio; FCFGrowth, CapexToDepreciation | `run_cash_flow_analysis` |
-| `growth_analyst` | RevenueGrowth, NetIncomeGrowth, FCFGrowth; Dilution | `run_growth_analysis` |
-| `red_flags_analyst` | Raw FCF/OCF flags, threshold flags (negative margins, high D/E, negative ROA/ROE); Accruals, DebtGrowth, Dilution, CapexToDepreciation | `run_red_flags_analysis` |
-
-### Design Invariants
-
-- Each subagent has **exactly one tool** matching its specialty — it cannot call tools it was not given.
-- Subagents are **stateless**: the manager must embed the `cache_key` in every delegation instruction.
-- System prompts are intentionally concise (role statement + tool usage instruction). The LLM analysis depth is driven by the topic prompt inside the tool, not by the system prompt.
+| `liquidity_analyst` | `run_liquidity_analysis` | `liquidity_result` |
+| `solvency_analyst` | `run_solvency_analysis` | `solvency_result` |
+| `profitability_analyst` | `run_profitability_analysis` | `profitability_result` |
+| `efficiency_analyst` | `run_efficiency_analysis` | `efficiency_result` |
+| `cash_flow_analyst` | `run_cash_flow_analysis` | `cash_flow_result` |
+| `growth_analyst` | `run_growth_analysis` | `growth_result` |
+| `red_flags_analyst` | `run_red_flags_analysis` | `red_flags_result` |
 
 ---
 
 ## Tools
 
-### Manager Tool — `prepare_financial_data`
+### `prepare_financial_data`
 
-**Source:** `agents/_tools/data_tools.py`
-
-**Given to:** Manager only (not subagents).
-
-```python
-@tool
-def prepare_financial_data(ticker: str, sector: str, year: int | None = None) -> str:
-```
-
-**Stages:**
+**Source:** `agents/_tools/data_tools.py` — called directly by `prepare_data_node` (not via LLM).
 
 | Stage | Action |
 |---|---|
 | 1. Download | `Downloader.from_ticker(ticker).get_merged_data()` |
-| 2. Evaluate | `FundamentalTraderAssistant(merged, weights).evaluate()` — 24 scored + 14 unscored metrics |
-| 3. Normalise | `_normalise_time()` + `_filter_year()` per output DataFrame |
+| 1b. Enrich | `longName` → `company_name`; `sector` auto-detected from `sectorKey` if not supplied |
+| 2. Evaluate | `FundamentalTraderAssistant.evaluate()` — 24 scored + 14 unscored metrics |
+| 3. Normalise | `_normalise_time()` + `_filter_year()` per DataFrame |
 | 4. Cache | `write_payloads(cache_key, {...})` → `agents/.cache/{KEY}/payloads.json` |
 
-**Returns (success):**
-```json
-{"cache_key": "AAPL_2023", "ticker": "AAPL", "sector": "Technology", "year": 2023, "status": "ready"}
-```
-
-**Returns (failure):**
-```json
-{"error": "<descriptive message>"}
-```
-
-Failures: empty download, `EvaluationError` (bad ticker/weights), any unexpected exception. Never raises — errors arrive as JSON.
-
-**Logging:** `[prepare_financial_data] ticker=... sector=... year=...` on start; `cache written → key=...` on success; `EvaluationError: ...` on evaluation failure.
-
----
+Returns JSON: `{"cache_key", "ticker", "company_name", "sector", "year", "status": "ready"}`.
 
 ### Topic Tools — `run_*_analysis`
 
-**Source:** `agents/_tools/topic_tools.py`
+**Source:** `agents/_tools/topic_tools.py` — called by subgraph `run_analysis` nodes.
 
-**Given to:** One subagent each (see table above).
-
-All seven tools share the same implementation via `_run_topic(cache_key, topic)`:
-
+All share `_run_topic(cache_key, topic)`:
 ```
-1. read_payloads(cache_key)                 → dict (raises FileNotFoundError if missing)
-2. _build_topic_chain(topic, llm)           → (prompt, PydanticOutputParser)
-3. _invoke_chain(prompt, parser, llm, ...)  → Pydantic assessment | None  [one-shot fix retry]
-4. write_topic_result(cache_key, topic, assessment.model_dump())
-5. return json.dumps(assessment.model_dump())
+read_payloads(cache_key) → _build_topic_chain(topic, llm) → _invoke_chain(...) → write_topic_result(...)
 ```
 
-**Model override:** Set `TOPIC_TOOLS_MODEL` env variable at process start to override the default `gpt-4.1-nano` for all topic tools (e.g. for cheaper testing).
+| Tool | Key return fields |
+|---|---|
+| `run_liquidity_analysis` | `rating`, `rationale`, `working_capital_efficiency`, `concerns` |
+| `run_solvency_analysis` | `rating`, `rationale`, `debt_trend`, `concerns` |
+| `run_profitability_analysis` | `rating`, `rationale`, `earnings_quality`, `concerns` |
+| `run_efficiency_analysis` | `rating`, `rationale`, `working_capital_chain`, `concerns` |
+| `run_cash_flow_analysis` | `rating`, `rationale`, `capital_allocation`, `concerns` |
+| `run_growth_analysis` | `trajectory`, `rationale`, `dilution_impact`, `concerns` |
+| `run_red_flags_analysis` | `severity`, `rationale`, `cash_flow_flags`, `threshold_flags`, `quality_concerns` |
 
-**Tool signatures and return schemas:**
-
-| Tool | `cache_key` arg | Key return fields |
-|---|---|---|
-| `run_liquidity_analysis` | Identifier from `prepare_financial_data` | `rating` ("strong"\|"adequate"\|"weak"), `rationale`, `working_capital_efficiency`, `concerns` |
-| `run_solvency_analysis` | same | `rating`, `rationale`, `debt_trend`, `concerns` |
-| `run_profitability_analysis` | same | `rating`, `rationale`, `earnings_quality`, `concerns` |
-| `run_efficiency_analysis` | same | `rating`, `rationale`, `working_capital_chain`, `concerns` |
-| `run_cash_flow_analysis` | same | `rating`, `rationale`, `capital_allocation`, `concerns` |
-| `run_growth_analysis` | same | `trajectory` ("accelerating"\|"stable"\|"decelerating"\|"declining"), `rationale`, `dilution_impact`, `concerns` |
-| `run_red_flags_analysis` | same | `severity` ("none"\|"low"\|"moderate"\|"high"), `rationale`, `cash_flow_flags`, `threshold_flags`, `quality_concerns` |
-
-**`TOPIC_TOOLS` dict** (convenience map used by `_subagents.py`):
-```python
-TOPIC_TOOLS = {
-    "liquidity":     run_liquidity_analysis,
-    "solvency":      run_solvency_analysis,
-    "profitability": run_profitability_analysis,
-    "efficiency":    run_efficiency_analysis,
-    "cash_flow":     run_cash_flow_analysis,
-    "growth":        run_growth_analysis,
-    "red_flags":     run_red_flags_analysis,
-}
-```
-
-**Error handling:** All tools return `{"error": "..."}` on any failure — `FileNotFoundError` on cache miss, LLM chain failure after retry, or unexpected exceptions. Never raise.
+All tools return `{"error": "..."}` on failure — never raise.
 
 ---
 
@@ -259,17 +208,11 @@ TOPIC_TOOLS = {
 
 **Source:** `agents/_cache.py`
 
-### Purpose
-
-Decouples the download/evaluate stage (run once by the manager) from the LLM analysis stage (run once per topic by each subagent). Subagents never call yfinance — they read pre-computed JSON payloads from disk.
-
-### Layout
-
 ```
 agents/.cache/
 └── {TICKER}_{YEAR}/
-    ├── payloads.json        # five LLM input payloads + metadata (written by manager)
-    ├── liquidity.json       # LiquidityAssessment result (written by subagent)
+    ├── payloads.json        ← written by prepare_financial_data
+    ├── liquidity.json       ← written by run_liquidity_analysis
     ├── solvency.json
     ├── profitability.json
     ├── efficiency.json
@@ -278,60 +221,7 @@ agents/.cache/
     └── red_flags.json
 ```
 
-The cache root is resolved relative to `_cache.py` (`agents/.cache/`), independent of the caller's working directory.
-
-### Public API
-
-```python
-from agents._cache import (
-    cache_key,
-    write_payloads,
-    read_payloads,
-    write_topic_result,
-    read_topic_result,
-)
-```
-
-#### `cache_key(ticker, year) → str`
-
-Builds a filesystem-safe cache identifier.
-
-```python
-cache_key("AAPL", 2023)   # → "AAPL_2023"
-cache_key("eni.mi", None) # → "ENI.MI_all"
-cache_key("msft", None)   # → "MSFT_all"
-```
-
-Ticker is uppercased. Year `None` → `"all"` (all available periods).
-
-#### `write_payloads(key, data) → None`
-
-Writes `agents/.cache/{key}/payloads.json`. Creates the directory if it does not exist.
-
-Expected `data` keys:
-```
-ticker, sector, year,
-metrics, extended_metrics, composite_scores, eval_metrics, red_flags
-```
-All `metrics` values are JSON strings (from `dataframe_to_json()`).
-
-#### `read_payloads(key) → dict`
-
-Reads `agents/.cache/{key}/payloads.json`.
-
-**Raises `FileNotFoundError`** if the key has not been written yet. Callers (topic tools) catch this and return `{"error": ...}`.
-
-#### `write_topic_result(key, topic, data) → None`
-
-Writes `agents/.cache/{key}/{topic}.json`. Topic is any string matching `TOPIC_TOOLS` keys.
-
-#### `read_topic_result(key, topic) → dict | None`
-
-Reads a topic result. Returns `None` if not yet written (no error raised). Use this to check whether a subagent has already completed a topic (e.g., before re-delegating).
-
-### Cache Lifetime
-
-The cache is **not automatically invalidated**. Entries persist until manually deleted. Re-running an analysis for the same `ticker + year` combination overwrites `payloads.json` and each topic file.
+Cache is **not auto-invalidated**. Delete `agents/.cache/{KEY}/` to force a fresh run.
 
 ---
 
@@ -339,8 +229,8 @@ The cache is **not automatically invalidated**. Entries persist until manually d
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OPENAI_API_KEY` | _(required)_ | OpenAI key for all LLM calls. Loaded via `python-dotenv` in `topic_tools.py`. |
-| `TOPIC_TOOLS_MODEL` | `"gpt-4.1-nano"` | Override LLM model for all seven topic tools at import time. |
+| `OPENAI_API_KEY` | _(required)_ | OpenAI key for all LLM calls |
+| `TOPIC_TOOLS_MODEL` | `"gpt-4.1-nano"` | Override LLM model for all seven topic tools at import time |
 
 ---
 
@@ -350,13 +240,12 @@ The cache is **not automatically invalidated**. Entries persist until manually d
 
 | Test class | What it covers |
 |---|---|
-| `TestCacheUtils` | `cache_key` normalisation; `write`/`read` payloads roundtrip; `FileNotFoundError` on missing key; `write`/`read` topic result roundtrip; `None` on missing topic result |
-| `TestPrepareFinancialDataTool` | Empty download → error JSON; `EvaluationError` → error JSON; happy path → `cache_key` + `status: ready` in result, `write_payloads` called once |
-| `TestTopicTools` | All 7 topics present in `TOPIC_TOOLS`; missing cache key → error JSON (no exception raised) |
-| `TestSubagents` | 7 subagents built; required keys present in each; each has exactly one tool; names are unique |
-| `TestManagerAgent` | `create_financial_manager()` constructs without raising; custom model accepted |
+| `TestCacheUtils` | `cache_key` normalisation; write/read roundtrips; `FileNotFoundError` on missing key |
+| `TestPrepareFinancialDataTool` | Empty download → error JSON; `EvaluationError` → error JSON; happy path → `cache_key` + `status: ready`; sector auto-detect; fallback to `"Default"` |
+| `TestTopicTools` | All 7 topics in `TOPIC_TOOLS`; missing cache key → error JSON |
+| `TestSubagents` | 7 subgraphs built; each is a compiled StateGraph |
+| `TestManagerAgent` | `create_financial_manager()` constructs without raising; custom model accepted; result has `final_report` key |
 
-Run:
 ```bash
 python -m unittest tests/test_financial_agent.py
 ```
@@ -367,23 +256,23 @@ python -m unittest tests/test_financial_agent.py
 
 | Symptom | Where to look |
 |---|---|
-| `{"error": "No financial data returned for ticker '...'}` from `prepare_financial_data` | Verify the ticker symbol and network connectivity. Check `logs/error.log`. |
-| `{"error": "EvaluationError: ..."}` from `prepare_financial_data` | Ticker or sector name is invalid. Check `EvaluationError` message — it names the exact problem (empty data, multi-ticker, bad weights). |
-| Topic tool returns `{"error": "No cached payloads for key '...'. Call prepare_financial_data first."}` | Manager did not include the correct `cache_key` in the subagent instruction, or `prepare_financial_data` was not called before delegation. |
-| Topic tool returns `{"error": "LLM chain for topic '...' failed after fix retry — see logs."}` | The LLM returned output that could not be parsed as the expected Pydantic model even after one fix retry. Check `logs/debug.log` for the raw LLM response. |
-| Stale data returned for a ticker | Cache is not invalidated automatically. Delete `agents/.cache/{TICKER}_{YEAR}/` to force a fresh download. |
-| Subagent receives wrong tool | Check `_SUBAGENT_META` in `_subagents.py` — the third element of each tuple is the `TOPIC_TOOLS` key. Verify the key matches exactly. |
-| `create_financial_manager()` hangs on construction | Deep Agents compile step — check that `deepagents` is installed and that `OPENAI_API_KEY` is set. |
+| `ValueError: [prepare_data_node] No financial data...` | Verify ticker symbol and network. Check `logs/error.log`. |
+| `ValueError: [prepare_data_node] EvaluationError: ...` | Ticker or sector invalid. Check error message for exact cause. |
+| Topic subgraph result is `{"error": "No cached payloads..."}` | `prepare_data` node did not complete or `cache_key` not in state. Check graph wiring. |
+| Topic result is `{"error": "LLM chain for topic '...' failed..."}` | LLM parse failure after retry. Check `logs/debug.log` for raw LLM output. |
+| `final_report` is empty or missing | Check `compile_report_node` — one or more topic results may be `{"error": ...}`. The node handles unavailable topics gracefully. |
+| Stale data for a ticker | Delete `agents/.cache/{TICKER}_{YEAR}/` to force fresh download. |
+| `create_financial_manager()` raises `ImportError` | Ensure `langgraph`, `langchain-openai` are installed. `deepagents` is no longer required. |
 
 ---
 
-## Design Invariants (summary)
+## Design Invariants
 
-1. **`prepare_financial_data` runs exactly once per request** — subagents only read the cache.
-2. **Subagents are stateless** — the manager must pass `cache_key` explicitly in every delegation instruction.
+1. **`prepare_financial_data` runs exactly once** — topic subgraphs only read the cache.
+2. **Subgraphs are stateless** — each only needs `state["cache_key"]`.
 3. **All tools return JSON strings, never raise** — errors arrive as `{"error": "..."}`.
-4. **Each subagent has exactly one tool** — no cross-topic access.
+4. **Parallel fan-out** — LangGraph executes all 7 subgraphs concurrently; `compile_report` waits for all.
 5. **Cache keys are filesystem-safe** — ticker uppercased, year `None` → `"all"`.
 6. **Cache root is `__file__`-relative** — independent of caller's `cwd`.
-7. **LLM model is configurable at construction time** — `create_financial_manager(model=...)` propagates to all subagents. Topic tools additionally accept `TOPIC_TOOLS_MODEL` env override.
-8. **Pydantic v2 serialisation** — `.model_dump()` everywhere (not `.dict()`).
+7. **Model propagated via state** — `create_financial_manager(model=...)` injects into `AnalysisState["model"]`; nodes read it from state.
+8. **Pydantic v2 serialisation** — `.model_dump()` everywhere.

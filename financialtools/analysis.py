@@ -20,8 +20,9 @@ Usage
 
 Design invariants
 -----------------
-- Sector name must match a key in config.sector_metric_weights (title-case,
-  e.g. "Technology", "Finance"). Falls back to "Default" with a warning.
+- Sector name must match a key in config.sec_sector_metric_weights (yfinance
+  sectorKey convention, e.g. "technology", "financial-services"). Falls back
+  to "Default" with a warning.
 - Time column is normalised to integer years before JSON serialisation so
   the LLM receives "2022" / "2023", not "2022-12-31 00:00:00".
 - All seven topic chains use the same five JSON payloads: metrics,
@@ -59,7 +60,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from financialtools.config import sector_metric_weights
+from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
 from financialtools.processor import Downloader, FundamentalTraderAssistant
 from financialtools.pydantic_models import (
@@ -199,27 +200,30 @@ def _build_weights(sector: str) -> pd.DataFrame:
     """
     Build a weights DataFrame for the given sector.
 
-    Falls back to 'Default' if sector is not in sector_metric_weights.
+    Uses sec_sector_metric_weights (yfinance sectorKey convention, e.g. "technology").
+    Falls back to 'Default' if sector is not found.
 
     Returns
     -------
-    pd.DataFrame with columns: metrics, weights, sector.
+    pd.DataFrame with columns: sector, metrics, weights.
     """
-    if sector in sector_metric_weights:
-        raw = sector_metric_weights[sector]
+    if sector in sec_sector_metric_weights:
+        sector_weights_dict = sec_sector_metric_weights[sector]
     else:
         _logger.warning(
-            "Sector '%s' not found in sector_metric_weights — using 'Default'. "
+            "Sector '%s' not found in sec_sector_metric_weights — using 'Default'. "
             "Valid sectors: %s",
             sector,
-            sorted(sector_metric_weights.keys()),
+            sorted(sec_sector_metric_weights.keys()),
         )
-        raw = sector_metric_weights["Default"]
+        sector_weights_dict = sec_sector_metric_weights["Default"]
 
-    return (
-        pd.DataFrame(list(raw.items()), columns=["metrics", "weights"])
-        .assign(sector=sector)
-    )
+    # Build the weights DataFrame from the canonical sector config — single source of truth.
+    return pd.DataFrame({
+        "sector":  sector,
+        "metrics": list(sector_weights_dict.keys()),
+        "weights": list(sector_weights_dict.values()),
+    })
 
 
 def _normalise_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -369,9 +373,10 @@ def run_topic_analysis(
     Parameters
     ----------
     ticker  : Ticker symbol, e.g. "AAPL" or "ENI.MI".
-    sector  : Sector name matching a key in config.sector_metric_weights,
-              e.g. "Technology", "Energy", "Finance". Falls back to "Default"
-              with a warning if not found.
+    sector  : Sector name matching a key in config.sec_sector_metric_weights
+              (yfinance sectorKey convention, e.g. "technology", "energy",
+              "financial-services"). Falls back to "Default" with a warning
+              if not found.
     year    : Optional year filter. When provided, only rows for that year
               are sent to the LLM. None sends all available years.
     model   : OpenAI model name (default: "gpt-4.1-nano").

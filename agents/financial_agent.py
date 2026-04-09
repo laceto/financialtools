@@ -1,150 +1,131 @@
 """
-agents/financial_agent.py — Financial Analysis Manager agent.
+agents/financial_agent.py — Financial Analysis Manager graph.
 
 Public API
 ----------
-create_financial_manager(model, checkpointer) → compiled Deep Agent
-    Returns a runnable Deep Agent that accepts:
-        {"messages": [{"role": "user", "content": "<request>"}]}
-    and returns a TopicAnalysisResult-equivalent structured report.
+create_financial_manager(model, checkpointer) → compiled LangGraph Runnable
+
+    Returns a StateGraph-based workflow that accepts:
+        {"ticker": str, "sector": str | None, "year": int | None, "model": str}
+    and returns a fully populated AnalysisState, including final_report.
 
 Usage
 -----
     from agents.financial_agent import create_financial_manager
 
-    agent = create_financial_manager()
+    agent  = create_financial_manager()
     config = {"configurable": {"thread_id": "session-1"}}
 
     result = agent.invoke(
-        {"messages": [{"role": "user", "content":
-            "Analyse AAPL for sector Technology, year 2023"}]},
+        {"ticker": "AAPL", "year": 2023},
         config=config,
     )
+    print(result["final_report"])
 
 Architecture
 ------------
-Manager (Deep Agent)
-├── Tools
-│   └── prepare_financial_data   — downloads + evaluates, writes cache
-├── Subagents (7)
-│   ├── liquidity_analyst        ← run_liquidity_analysis
-│   ├── solvency_analyst         ← run_solvency_analysis
-│   ├── profitability_analyst    ← run_profitability_analysis
-│   ├── efficiency_analyst       ← run_efficiency_analysis
-│   ├── cash_flow_analyst        ← run_cash_flow_analysis
-│   ├── growth_analyst           ← run_growth_analysis
-│   └── red_flags_analyst        ← run_red_flags_analysis
-└── Built-in (Deep Agents)
-    ├── write_todos               — task planning
-    ├── task                      — delegation to subagents
-    └── filesystem tools          — ls, read_file, write_file, …
+                    ┌─────────────────────┐
+    START ─────────►│   prepare_data      │  downloads + evaluates, writes cache
+                    └────────┬────────────┘
+           ┌─────────────────┼──── … ──────────────────────┐
+           ▼                 ▼                              ▼
+    ┌─────────────┐  ┌─────────────┐              ┌───────────────┐
+    │  liquidity  │  │  solvency   │  …  (×7)     │  red_flags    │
+    │  subgraph   │  │  subgraph   │              │  subgraph     │
+    └──────┬──────┘  └──────┬──────┘              └───────┬───────┘
+           └─────────────────┴──── … ──────────────────────┘
+                                    │ (all must complete)
+                                    ▼
+                    ┌─────────────────────┐
+                    │   compile_report    │  LLM synthesis → final_report
+                    └────────┬────────────┘
+                             ▼
+                            END
 
-Orchestration flow
+Parallel execution
 ------------------
-1. Manager receives user request (ticker + sector + optional year).
-2. Manager plans via write_todos (7 topic tasks + 1 compile task).
-3. Manager calls prepare_financial_data(ticker, sector, year).
-   → Downloads yfinance data, evaluates 24+14 metrics, writes cache.
-4. Manager delegates each topic to its specialist subagent via `task`:
-      task(agent="liquidity_analyst",
-           instruction="Run liquidity analysis. cache_key=<key>")
-   Each subagent calls its tool, writes result to cache, returns JSON.
-5. After all 7 subagents return, manager synthesises findings and
-   presents a structured report to the user.
+All seven topic subgraphs fan out from prepare_data and fan in to compile_report.
+LangGraph executes them concurrently and waits for all before compile_report runs.
+
+Streaming
+---------
+Use agent.stream(input, stream_mode="values") to observe intermediate state
+updates from each subgraph as they complete.
 
 Design invariants
 -----------------
-- prepare_financial_data runs ONCE — all subagents read the same cache.
-- Subagents are stateless — each receives its complete instruction in one call.
-- Manager uses thread_id for session continuity (stored in checkpointer).
-- All tools return JSON strings; {"error": "..."} on failure.
+- prepare_data_node is the only node that calls the data download tool.
+- Subgraphs are stateless — they only need cache_key from state.
+- compile_report_node is the only LLM call that synthesises the full picture.
+- Thread-level persistence via checkpointer (MemorySaver by default).
 """
 
 from __future__ import annotations
 
-from deepagents import create_deep_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 
-from agents._subagents import build_topic_subagents
-from agents._tools.data_tools import prepare_financial_data
+from agents._subagents import TOPIC_NAMES, build_topic_subgraphs
+from agents.graph_nodes import compile_report_node, prepare_data_node
+from agents.graph_state import AnalysisState
 
-# ─── Manager system prompt ────────────────────────────────────────────────────
-
-_MANAGER_SYSTEM_PROMPT = """You are a financial analysis manager responsible for coordinating
-a team of specialist subagents to produce a comprehensive fundamental stock analysis report.
-
-Your workflow for every analysis request:
-
-1. **Plan** — Use write_todos to create 9 tasks:
-   - "Prepare financial data"
-   - "Liquidity analysis"
-   - "Solvency analysis"
-   - "Profitability analysis"
-   - "Efficiency analysis"
-   - "Cash flow analysis"
-   - "Growth analysis"
-   - "Red flags analysis"
-   - "Compile final report"
-
-2. **Prepare data** — Call prepare_financial_data(ticker=..., sector=..., year=...).
-   This downloads, evaluates, and caches all financial data.
-   If it returns an error, report it immediately and stop.
-
-3. **Delegate analyses** — For each topic, call:
-      task(agent="<topic>_analyst",
-           instruction="Run your analysis. Use cache_key=<cache_key>. Return the full JSON result.")
-   You MUST include the cache_key in every delegation instruction.
-   Delegate all 7 topics — do not skip any.
-
-4. **Compile report** — After all subagents return, produce a structured report with:
-   - Overall assessment (regime signal, key strengths, key risks)
-   - Per-topic summary (rating/trajectory + one-sentence insight)
-   - Top 3 concerns worth investor attention
-
-Always present the final report in clear markdown with a section per topic.
-Never fabricate data — only use what the tools return.
-"""
-
-
-# ─── Factory ─────────────────────────────────────────────────────────────────
 
 def create_financial_manager(
     model: str = "gpt-4.1-nano",
     checkpointer=None,
 ) -> object:
     """
-    Create and return the Financial Analysis Manager deep agent.
+    Build and compile the Financial Analysis Manager StateGraph.
 
-    Args:
-        model:        LLM model for both the manager and all subagents.
-                      Default: "gpt-4.1-nano".
-        checkpointer: LangGraph checkpointer for session persistence.
-                      Defaults to MemorySaver() (in-process, non-persistent).
-                      Pass a SqliteSaver or PostgresSaver for durable sessions.
+    Parameters
+    ----------
+    model : str
+        LLM model name used by both compile_report_node and all topic tools.
+        Injected into state so nodes can read it without a closure.
+        Default: "gpt-4.1-nano".
+    checkpointer :
+        LangGraph checkpointer for session persistence.
+        Defaults to MemorySaver() (in-process, non-persistent).
+        Pass SqliteSaver or PostgresSaver for durable sessions.
 
-    Returns:
-        Compiled deep agent (LangGraph Runnable).
-        Call .invoke({"messages": [...]}, config={"configurable": {"thread_id": "..."}})
-
-    Example
+    Returns
     -------
-        agent = create_financial_manager()
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content":
-                "Analyse MSFT for sector Technology, year 2023"}]},
-            config={"configurable": {"thread_id": "user-1"}},
-        )
+    Compiled LangGraph Runnable (CompiledStateGraph).
+    Invoke with: agent.invoke({"ticker": ..., "year": ...}, config={...})
     """
     if checkpointer is None:
         checkpointer = MemorySaver()
 
-    subagents = build_topic_subagents(model=model)
+    # ── Node: inject model into state so nodes can read it ──────────────────
+    def _set_model(state: AnalysisState) -> dict:
+        return {"model": model}
 
-    return create_deep_agent(
-        name="financial-analysis-manager",
-        model=model,
-        tools=[prepare_financial_data],
-        subagents=subagents,
-        system_prompt=_MANAGER_SYSTEM_PROMPT,
-        checkpointer=checkpointer,
-    )
+    # ── Build subgraphs ──────────────────────────────────────────────────────
+    topic_subgraphs = build_topic_subgraphs()
+
+    # ── Wire the main graph ──────────────────────────────────────────────────
+    workflow = StateGraph(AnalysisState)
+
+    workflow.add_node("set_model",      _set_model)
+    workflow.add_node("prepare_data",   prepare_data_node)
+    workflow.add_node("compile_report", compile_report_node)
+
+    for topic, subgraph in topic_subgraphs.items():
+        workflow.add_node(f"{topic}_analyst", subgraph)
+
+    # START → set_model → prepare_data
+    workflow.add_edge(START,        "set_model")
+    workflow.add_edge("set_model",  "prepare_data")
+
+    # prepare_data → all 7 topic subgraphs (parallel fan-out)
+    for topic in TOPIC_NAMES:
+        workflow.add_edge("prepare_data", f"{topic}_analyst")
+
+    # all 7 topic subgraphs → compile_report (fan-in; LangGraph waits for all)
+    for topic in TOPIC_NAMES:
+        workflow.add_edge(f"{topic}_analyst", "compile_report")
+
+    # compile_report → END
+    workflow.add_edge("compile_report", END)
+
+    return workflow.compile(checkpointer=checkpointer)

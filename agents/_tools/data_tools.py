@@ -3,7 +3,7 @@ agents/_tools/data_tools.py — Manager data-preparation tool.
 
 Tool
 ----
-prepare_financial_data(ticker, sector, year)
+prepare_financial_data(ticker, sector=None, year=None)
     Downloads yfinance data, runs FundamentalTraderAssistant.evaluate(), and
     writes the five normalised JSON payloads to the disk cache.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import pandas as pd
 from langchain_core.tools import tool
@@ -39,7 +40,7 @@ _logger = logging.getLogger(__name__)
 
 
 @tool
-def prepare_financial_data(ticker: str, sector: str, year: int | None = None) -> str:
+def prepare_financial_data(ticker: str, sector: str | None = None, year: int | None = None) -> str:
     """
     Download and evaluate financial data for a ticker, then cache the results.
 
@@ -50,14 +51,19 @@ def prepare_financial_data(ticker: str, sector: str, year: int | None = None) ->
         ticker: Ticker symbol (e.g. "AAPL", "ENI.MI").
         sector: Sector name matching a key in config.sector_metric_weights,
                 e.g. "Technology", "Energy", "Finance".
-                Falls back to "Default" with a warning if not found.
+                If omitted, the sector is auto-detected from yfinance info
+                (lowercased, spaces replaced with dashes, e.g. "technology-services").
+                Falls back to "Default" with a warning if the detected value
+                is not found in sector_metric_weights.
         year:   Optional year filter.  When provided, only data for that year
                 is sent to the LLM chains.  None sends all available years.
 
     Returns:
         JSON object:
-            {"cache_key": str, "ticker": str, "sector": str,
-             "year": int | None, "status": "ready"}
+            {"cache_key": str, "ticker": str, "company_name": str,
+             "sector": str, "year": int | None, "status": "ready"}
+            company_name: lowercased longName from yfinance info;
+                          falls back to lowercased ticker if absent.
         On failure:
             {"error": "<message>"}
 
@@ -76,6 +82,27 @@ def prepare_financial_data(ticker: str, sector: str, year: int | None = None) ->
         if merged.empty:
             return json.dumps({"error": f"No financial data returned for ticker '{ticker}'. "
                                          "Verify the symbol and network connectivity."})
+
+        # ── Stage 1b: Enrich from info (company name + optional sector) ──────
+        info_df = d.get_info_data()
+
+        # Company name — always extracted; falls back to ticker if absent
+        if not info_df.empty and "longName" in info_df.columns:
+            company_name = info_df["longName"].str.lower().to_string(index=False).strip()
+            _logger.info("[prepare_financial_data] company_name='%s'", company_name)
+        else:
+            company_name = ticker.lower()
+            _logger.warning("[prepare_financial_data] longName not found in info; using ticker as name")
+
+        # Sector — auto-detected when caller did not supply one
+        if sector is None:
+            if not info_df.empty and "sector" in info_df.columns:
+                raw = info_df["sector"].str.lower().to_string(index=False)
+                sector = re.sub(r" ", "-", raw.strip())
+                _logger.info("[prepare_financial_data] sector auto-detected → %s", sector)
+            else:
+                sector = "Default"
+                _logger.warning("[prepare_financial_data] sector not found in info; using 'Default'")
 
         # ── Stage 2: Evaluate ────────────────────────────────────────────────
         weights = _build_weights(sector)
@@ -96,6 +123,7 @@ def prepare_financial_data(ticker: str, sector: str, year: int | None = None) ->
         key = cache_key(ticker, year)
         write_payloads(key, {
             "ticker":           ticker,
+            "company_name":     company_name,
             "sector":           sector,
             "year":             year,
             "metrics":          metrics_json,
@@ -107,11 +135,12 @@ def prepare_financial_data(ticker: str, sector: str, year: int | None = None) ->
 
         _logger.info("[prepare_financial_data] cache written → key=%s", key)
         return json.dumps({
-            "cache_key": key,
-            "ticker":    ticker,
-            "sector":    sector,
-            "year":      year,
-            "status":    "ready",
+            "cache_key":    key,
+            "ticker":       ticker,
+            "company_name": company_name,
+            "sector":       sector,
+            "year":         year,
+            "status":       "ready",
         })
 
     except EvaluationError as exc:

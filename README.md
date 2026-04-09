@@ -29,15 +29,24 @@ df = DownloaderWrapper.download_data("AAPL")
 
 # 3 — Evaluate only (no LLM)
 import pandas as pd
-from financialtools.config import sector_metric_weights
+from financialtools.config import sec_sector_metric_weights
 
-sector = "Technology"
-weights = (
-    pd.DataFrame(list(sector_metric_weights[sector].items()), columns=["metrics", "weights"])
-    .assign(sector=sector)
-)
+sector = "technology"   # yfinance sectorKey convention — lowercase, dashes
+weights = pd.DataFrame({
+    "sector":  sector,
+    "metrics": list(sec_sector_metric_weights[sector].keys()),
+    "weights": list(sec_sector_metric_weights[sector].values()),
+})
 evaluator = FundamentalEvaluator(df=df, weights=weights)
 results = evaluator.evaluate_multiple(["AAPL"])
+
+# 4 — Multi-agent hedge fund report (LangGraph)
+from agents import create_financial_manager
+
+agent  = create_financial_manager()
+config = {"configurable": {"thread_id": "session-1"}}
+result = agent.invoke({"ticker": "AAPL", "year": 2023}, config=config)
+print(result["final_report"])   # long/short conviction report in markdown
 ```
 
 ## Package layout
@@ -57,10 +66,11 @@ results = evaluator.evaluate_multiple(["AAPL"])
 
 **Repo root (not part of the installable package):**
 
-| File | Responsibility |
+| File / Package | Responsibility |
 |---|---|
 | `chains.py` | LangChain pipeline → `StockRegimeAssessment` (reads from pre-computed Excel output files) |
 | `tools.py` | `get_stock_regime_report` `@tool` for LangChain/LangGraph agents; `make_tools(base_dir)` factory |
+| `agents/` | LangGraph multi-agent workflow — `create_financial_manager()` runs 7 specialist subgraphs in parallel and produces a hedge-fund-style long/short conviction report |
 
 ## Key classes
 
@@ -132,7 +142,7 @@ from financialtools.analysis import run_topic_analysis
 
 result = run_topic_analysis(
     "AAPL",
-    sector="Technology Services",  # must match a key in config.sector_metric_weights
+    sector="technology-services",  # yfinance sectorKey convention (sec_sector_metric_weights)
     year=2023,                     # optional — None sends all available years
     model="gpt-4.1-nano",          # OpenAI model (default)
 )
@@ -151,6 +161,31 @@ Runs three stages in one call: download → `FundamentalTraderAssistant.evaluate
 `result.to_dict()` serialises all Pydantic assessments to plain dicts via `.model_dump()`.
 
 Individual topic fields are `None` when the corresponding chain fails; errors are logged as WARNING and processing continues.
+
+## Multi-agent workflow (`agents/`)
+
+A LangGraph `StateGraph` that coordinates 7 specialist subgraphs and compiles a hedge-fund-style long/short conviction report. No Deep Agents dependency — pure LangGraph.
+
+```python
+from agents import create_financial_manager
+
+agent  = create_financial_manager(model="gpt-4.1-nano")
+config = {"configurable": {"thread_id": "my-session"}}
+
+# Blocking — returns full AnalysisState
+result = agent.invoke({"ticker": "BRE.MI", "year": 2023}, config=config)
+print(result["final_report"])         # markdown: LONG/SHORT recommendation + deep-dive
+
+# Streaming — observe each subgraph as it completes
+for chunk in agent.stream({"ticker": "AAPL"}, config=config, stream_mode="values"):
+    print(chunk)
+```
+
+**Input keys:** `ticker` (required), `sector` (optional — auto-detected from yfinance), `year` (optional), `model` (optional).
+
+**Output:** `result["final_report"]` — structured markdown with position recommendation, per-topic deep-dives with metric values, long/short theses, and key risks.
+
+The workflow runs the 7 topic subgraphs (`liquidity`, `solvency`, `profitability`, `efficiency`, `cash_flow`, `growth`, `red_flags`) **in parallel**, then synthesises the results in a single `compile_report` node. See `agents/AGENTS.md` for the full architecture.
 
 ## Exceptions
 
