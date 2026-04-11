@@ -26,7 +26,7 @@ from financialtools.analysis import (
     _invoke_chain,
     _normalise_time,
 )
-from financialtools.config import sector_metric_weights
+from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
 from financialtools.processor import Downloader, FundamentalTraderAssistant
 from financialtools.utils import dataframe_to_json
@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.INFO)
 # Constants
 # ---------------------------------------------------------------------------
 
-SECTOR_OPTIONS = sorted(sector_metric_weights.keys())
+SECTOR_OPTIONS = sorted(sec_sector_metric_weights.keys())
 
 _RATING_COLOR = {
     "strong": "green",

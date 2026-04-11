@@ -16,7 +16,7 @@ Usage
 Options
 -------
     --ticker      Ticker symbol (required unless --list-sectors)
-    --sector      Sector name matching config.sector_metric_weights
+    --sector      Sector name matching config.sec_sector_metric_weights
                   (required unless --list-sectors)
     --year        Optional year filter; omit to include all available years
     --model       OpenAI model name (default: gpt-4.1-nano)
@@ -44,7 +44,7 @@ import argparse
 import logging
 import sys
 
-from financialtools.config import sector_metric_weights
+from financialtools.config import sec_sector_metric_weights
 
 # ---------------------------------------------------------------------------
 # Logging: console output for the script; wrappers.py configures file handlers
@@ -226,7 +226,7 @@ def _parse_args() -> argparse.Namespace:
         "--sector",
         metavar="SECTOR",
         help=(
-            "Sector name from config.sector_metric_weights, e.g. 'Technology'. "
+            "Sector name from config.sec_sector_metric_weights, e.g. 'technology'. "
             "Run --list-sectors to see all valid values."
         ),
     )
@@ -256,7 +256,7 @@ def main() -> int:
 
     if args.list_sectors:
         print("Valid sector names:")
-        for s in sorted(sector_metric_weights.keys()):
+        for s in sorted(sec_sector_metric_weights.keys()):
             print(f"  {s}")
         return 0
 

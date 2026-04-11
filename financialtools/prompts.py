@@ -427,6 +427,31 @@ Extended quality ratios (unscored diagnostics):
 """,
 }
 
+# Quantitative overview block: composite scores are the primary source;
+# all other payloads are provided for cross-referencing.
+_TOPIC_METRICS["quantitative_overview"] = (
+    "Composite Scores (primary source — read these first):\n"
+    "    The composite_scores payload contains the weighted composite score (1–5 scale)\n"
+    "    and per-dimension sub-scores across all available time periods.\n"
+    "    Higher scores = stronger fundamentals. Use these to assess trend and profile.\n"
+    "    Composite score ranges: 1 = Weak, 3 = Adequate, 5 = Strong.\n"
+    "    Four metrics use inverse scoring (lower = higher score):\n"
+    "    DebtToEquity, DebtRatio, NetDebtToEBITDA, CapexRatio.\n\n"
+    + _FINANCIAL_METRICS_BLOCK
+    + "\n\nEvaluation Metrics (not in composite — use for valuation context):\n"
+    "    -bvps: total equity / shares outstanding\n"
+    "    -fcf_per_share: free cash flow / shares outstanding\n"
+    "    -eps: earning per share\n"
+    "    -P/E: current stock price / eps\n"
+    "    -P/B: current stock price / bvps\n"
+    "    -P/FCF: current stock price / fcf_per_share\n"
+    "    -EarningsYield: eps / current stock price\n"
+    "    -FCFYield: free cash flow / market capitalization\n\n"
+    + _EXTENDED_METRICS_BLOCK
+    + "\n\n"
+    + _RED_FLAGS_BLOCK
+)
+
 # Comprehensive block: all 24 scored + all 14 extended, grouped by topic.
 # Reuses _FINANCIAL_METRICS_BLOCK and _EXTENDED_METRICS_BLOCK rather than duplicating.
 _TOPIC_METRICS["comprehensive"] = (
@@ -449,6 +474,11 @@ _TOPIC_RATING_GUIDE = {
     "cash_flow":      "'strong' / 'adequate' / 'weak' — FCF generation and cash conversion quality",
     "growth":         "'accelerating' / 'stable' / 'decelerating' / 'declining' — multi-year revenue, income, and FCF trajectory",
     "red_flags":      "'none' / 'low' / 'moderate' / 'high' — combined severity of all detected warnings",
+    "quantitative_overview": (
+        "overall_rating: 'strong' / 'adequate' / 'weak'; "
+        "composite_trend: 'improving' / 'stable' / 'deteriorating'; "
+        "data_completeness: 'complete' / 'partial' / 'sparse'"
+    ),
     "comprehensive":  (
         "regime: 'bull' / 'bear'; "
         "evaluation: 'overvalued' / 'undervalued' / 'fair'; "
@@ -539,11 +569,12 @@ def build_topic_prompt(topic: str) -> str:
 # Topic prompt constants — one per pydantic_models topic model
 # ---------------------------------------------------------------------------
 
-system_prompt_liquidity     = build_topic_prompt("liquidity")
-system_prompt_solvency      = build_topic_prompt("solvency")
-system_prompt_profitability = build_topic_prompt("profitability")
-system_prompt_efficiency    = build_topic_prompt("efficiency")
-system_prompt_cash_flow     = build_topic_prompt("cash_flow")
-system_prompt_growth        = build_topic_prompt("growth")
-system_prompt_red_flags     = build_topic_prompt("red_flags")
-system_prompt_comprehensive = build_topic_prompt("comprehensive")
+system_prompt_liquidity             = build_topic_prompt("liquidity")
+system_prompt_solvency              = build_topic_prompt("solvency")
+system_prompt_profitability         = build_topic_prompt("profitability")
+system_prompt_efficiency            = build_topic_prompt("efficiency")
+system_prompt_cash_flow             = build_topic_prompt("cash_flow")
+system_prompt_growth                = build_topic_prompt("growth")
+system_prompt_red_flags             = build_topic_prompt("red_flags")
+system_prompt_quantitative_overview = build_topic_prompt("quantitative_overview")
+system_prompt_comprehensive         = build_topic_prompt("comprehensive")

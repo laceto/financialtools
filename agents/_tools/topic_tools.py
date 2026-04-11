@@ -1,29 +1,37 @@
 """
 agents/_tools/topic_tools.py — Per-topic LLM analysis tools for financial subagents.
 
-Seven tools, one per metric group.  Each tool:
-  1. Reads the five JSON payloads from the disk cache (written by prepare_financial_data).
-  2. Builds the appropriate LangChain chain using analysis._build_topic_chain().
-  3. Invokes the chain with the one-shot fix retry from analysis._invoke_chain().
-  4. Writes the Pydantic assessment back to the cache as JSON.
-  5. Returns the assessment as a JSON string (or {"error": ...} on failure).
+Public API
+----------
+_analyse_topic(payloads, topic, model) → str
+    Core LLM implementation.  Accepts a payloads dict (keys: ticker, metrics,
+    extended_metrics, composite_scores, eval_metrics, red_flags) and runs the
+    full chain: build → invoke with retry → write topic result to cache.
+    Never raises — returns {"error": "..."} on failure.
+    Called directly by topic subgraph nodes (data from state, no disk reads).
 
-Tool inventory
---------------
-run_liquidity_analysis(cache_key)     → LiquidityAssessment JSON
-run_solvency_analysis(cache_key)      → SolvencyAssessment JSON
-run_profitability_analysis(cache_key) → ProfitabilityAssessment JSON
-run_efficiency_analysis(cache_key)    → EfficiencyAssessment JSON
-run_cash_flow_analysis(cache_key)     → CashFlowAssessment JSON
-run_growth_analysis(cache_key)        → GrowthAssessment JSON
-run_red_flags_analysis(cache_key)     → RedFlagsAssessment JSON
+_run_topic(cache_key, topic) → str
+    Disk-cache shim: reads payloads from agents/.cache/{key}/payloads.json,
+    then delegates to _analyse_topic.
+    Used by the @tool wrappers for backward compatibility and CLI use.
+
+run_*_analysis(cache_key) [@tool × 7]
+    LangChain tools — one per metric group.  Thin wrappers around _run_topic.
+    Called by @tool wrappers; kept for backward compatibility and testing.
+
+TOPIC_TOOLS : dict[str, StructuredTool]
+    Convenience map: topic name → compiled tool.
 
 Design invariants
 -----------------
-- Each tool is given to exactly one subagent (its matching specialist).
+- _analyse_topic is the single implementation of the LLM chain call.
+- @tool wrappers are the backward-compatible surface — they always go through
+  the disk cache (read_payloads → _analyse_topic).
+- Subgraph nodes bypass the @tool wrappers entirely: they call _analyse_topic
+  directly with payloads read from AnalysisState.
 - Tools never raise — errors are returned as {"error": "..."}.
-- The LLM model defaults to "gpt-4.1-nano" and can be overridden at
-  module import time via TOPIC_TOOLS_MODEL env variable.
+- The LLM model defaults to "gpt-4.1-nano"; override via TOPIC_TOOLS_MODEL env
+  var (affects @tool wrappers) or by passing model= to _analyse_topic directly.
 - Pydantic v2 serialisation: .model_dump() (not .dict()).
 """
 
@@ -37,7 +45,6 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from agents._cache import cache_key as make_cache_key
 from agents._cache import read_payloads, write_topic_result
 from financialtools.analysis import _build_topic_chain, _invoke_chain
 
@@ -49,26 +56,44 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_MODEL = os.getenv("TOPIC_TOOLS_MODEL", "gpt-4.1-nano")
 
 
-def _run_topic(cache_key: str, topic: str) -> str:
+# ---------------------------------------------------------------------------
+# Core implementation — accepts payloads dict, never raises
+# ---------------------------------------------------------------------------
+
+def _analyse_topic(payloads: dict, topic: str, model: str = _DEFAULT_MODEL) -> str:
     """
-    Shared implementation for all seven topic tools.
+    Run the LLM analysis chain for one topic given a pre-loaded payloads dict.
 
-    Reads payloads from cache, builds chain for `topic`, invokes with retry,
-    writes result back to cache, and returns the assessment as JSON.
+    This is the single implementation used by both topic subgraph nodes
+    (payloads from state) and the @tool wrappers (payloads from disk cache).
 
-    Returns {"error": "..."} on any failure.
+    Parameters
+    ----------
+    payloads : dict with required keys:
+                   ticker, metrics, extended_metrics, composite_scores,
+                   eval_metrics, red_flags
+               Optional key: cache_key (used for logging and cache write).
+    topic    : One of the seven topic keys
+               ("liquidity", "solvency", "profitability", "efficiency",
+                "cash_flow", "growth", "red_flags").
+    model    : LLM model name. Defaults to _DEFAULT_MODEL.
+
+    Returns
+    -------
+    JSON string — the Pydantic assessment as a dict, or {"error": "..."}.
+    Never raises.
+
+    Side-effect
+    -----------
+    On success, writes the result to agents/.cache/{cache_key}/{topic}.json
+    when payloads contains "cache_key" (for observability / warm restarts).
     """
-    _logger.info("[%s] Starting analysis for topic '%s'", cache_key, topic)
+    log_key = payloads.get("cache_key", payloads.get("ticker", "unknown"))
+    ticker  = payloads.get("ticker", log_key)
+
+    _logger.info("[%s] Starting analysis for topic '%s'", log_key, topic)
     try:
-        payloads = read_payloads(cache_key)
-    except FileNotFoundError as exc:
-        return json.dumps({"error": str(exc)})
-
-    ticker = payloads.get("ticker", cache_key)
-
-    try:
-        llm = ChatOpenAI(model=_DEFAULT_MODEL, temperature=0)
-
+        llm = ChatOpenAI(model=model, temperature=0)
         prompt, parser = _build_topic_chain(topic, llm)
 
         inputs = {
@@ -83,23 +108,47 @@ def _run_topic(cache_key: str, topic: str) -> str:
 
         if assessment is None:
             msg = f"LLM chain for topic '{topic}' failed after fix retry — see logs."
-            _logger.warning("[%s] %s", cache_key, msg)
+            _logger.warning("[%s] %s", log_key, msg)
             return json.dumps({"error": msg})
 
         result_dict = assessment.model_dump()
-        write_topic_result(cache_key, topic, result_dict)
 
-        _logger.info("[%s] '%s' assessment complete.", cache_key, topic)
+        # Write to cache for observability when cache_key is known.
+        if "cache_key" in payloads:
+            write_topic_result(payloads["cache_key"], topic, result_dict)
+
+        _logger.info("[%s] '%s' assessment complete.", log_key, topic)
         return json.dumps(result_dict)
 
     except Exception as exc:
-        _logger.error("[%s] unexpected error in topic '%s'", cache_key, topic, exc_info=True)
+        _logger.error("[%s] unexpected error in topic '%s'", log_key, topic, exc_info=True)
         return json.dumps({"error": str(exc)})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Topic tools — one per metric group
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Disk-cache shim — used only by @tool wrappers
+# ---------------------------------------------------------------------------
+
+def _run_topic(cache_key: str, topic: str) -> str:
+    """
+    Read payloads from the disk cache then delegate to _analyse_topic.
+
+    Used exclusively by the @tool wrappers below (backward compatibility).
+    Topic subgraph nodes call _analyse_topic directly with payloads from state.
+
+    Returns {"error": "..."} on FileNotFoundError or any _analyse_topic failure.
+    """
+    try:
+        payloads = read_payloads(cache_key)
+    except FileNotFoundError as exc:
+        return json.dumps({"error": str(exc)})
+    payloads["cache_key"] = cache_key
+    return _analyse_topic(payloads, topic)
+
+
+# ---------------------------------------------------------------------------
+# Topic tools — one per metric group (@tool wrappers, backward compat)
+# ---------------------------------------------------------------------------
 
 @tool
 def run_liquidity_analysis(cache_key: str) -> str:
@@ -237,14 +286,46 @@ def run_red_flags_analysis(cache_key: str) -> str:
     return _run_topic(cache_key, "red_flags")
 
 
-# ─── Convenience list for subagent wiring ─────────────────────────────────────
+@tool
+def run_quantitative_overview_analysis(cache_key: str) -> str:
+    """
+    Produce a cross-cutting quantitative overview for the ticker identified by cache_key.
+
+    Analyses all five payload types together:
+      - composite_scores: score trend and per-dimension profile across time periods
+      - eval_metrics:     P/E, P/B, P/FCF, EarningsYield, FCFYield (valuation context)
+      - metrics:          24 scored fundamentals (cross-dimensional coherence check)
+      - extended_metrics: 14 unscored diagnostics (growth, working capital, quality ratios)
+      - red_flags:        cash-flow and threshold flags (surface vs. underlying quality)
+
+    This agent complements the seven topic-specific agents by surfacing patterns
+    that span multiple dimensions and cannot be attributed to a single topic.
+
+    Args:
+        cache_key: Identifier returned by prepare_financial_data.
+
+    Returns:
+        JSON with fields:
+          overall_rating ("strong"|"adequate"|"weak"),
+          composite_trend ("improving"|"stable"|"deteriorating"),
+          composite_trend_rationale, scoring_profile, valuation_context,
+          cross_dimensional_signals,
+          data_completeness ("complete"|"partial"|"sparse"),
+          concerns.
+        Returns {"error": "..."} on failure.
+    """
+    return _run_topic(cache_key, "quantitative_overview")
+
+
+# ─── Convenience map for external use (tests, CLI) ───────────────────────────
 
 TOPIC_TOOLS = {
-    "liquidity":     run_liquidity_analysis,
-    "solvency":      run_solvency_analysis,
-    "profitability": run_profitability_analysis,
-    "efficiency":    run_efficiency_analysis,
-    "cash_flow":     run_cash_flow_analysis,
-    "growth":        run_growth_analysis,
-    "red_flags":     run_red_flags_analysis,
+    "liquidity":             run_liquidity_analysis,
+    "solvency":              run_solvency_analysis,
+    "profitability":         run_profitability_analysis,
+    "efficiency":            run_efficiency_analysis,
+    "cash_flow":             run_cash_flow_analysis,
+    "growth":                run_growth_analysis,
+    "red_flags":             run_red_flags_analysis,
+    "quantitative_overview": run_quantitative_overview_analysis,
 }

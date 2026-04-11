@@ -30,6 +30,7 @@ TOPIC_NAMES: list[str] = [
     "cash_flow",
     "growth",
     "red_flags",
+    "quantitative_overview",
 ]
 
 

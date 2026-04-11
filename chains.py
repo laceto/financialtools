@@ -21,8 +21,8 @@ def get_stock_evaluation_report(
 
     Args:
         ticker:   Ticker symbol (e.g. "AAPL", "ENI.MI").
-        sector:   Sector name matching a key in config.sector_metric_weights,
-                  e.g. "Technology", "Energy", "Finance".
+        sector:   Sector name matching a key in config.sec_sector_metric_weights,
+                  e.g. "technology", "energy", "financial-services".
         year:     Optional year to focus the assessment on. If None, uses all years.
         base_dir: Directory containing the evaluation output files
                   (metrics.xlsx, composite_scores.xlsx, red_flags.xlsx,

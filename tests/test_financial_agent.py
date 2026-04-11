@@ -221,7 +221,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         result = self._call_tool("AAPL", sector=None)
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["sector"], "Default")
+        self.assertEqual(result["sector"], "default")
 
 
 class TestTopicTools(unittest.TestCase):
@@ -230,7 +230,8 @@ class TestTopicTools(unittest.TestCase):
     def test_all_topics_present_in_map(self):
         from agents._tools.topic_tools import TOPIC_TOOLS
         expected = {"liquidity", "solvency", "profitability",
-                    "efficiency", "cash_flow", "growth", "red_flags"}
+                    "efficiency", "cash_flow", "growth", "red_flags",
+                    "quantitative_overview"}
         self.assertEqual(set(TOPIC_TOOLS.keys()), expected)
 
     def test_missing_cache_key_returns_error(self):
@@ -256,10 +257,10 @@ class TestSubagents(unittest.TestCase):
     """Verify topic subgraph construction."""
 
     def test_seven_subgraphs_built(self):
-        """build_topic_subgraphs() must return exactly 7 compiled graphs."""
+        """build_topic_subgraphs() must return exactly 8 compiled graphs."""
         from agents._subagents import build_topic_subgraphs
         subgraphs = build_topic_subgraphs()
-        self.assertEqual(len(subgraphs), 7)
+        self.assertEqual(len(subgraphs), 8)
 
     def test_subgraph_keys_match_topic_names(self):
         """Keys must exactly match TOPIC_NAMES."""

@@ -70,6 +70,7 @@ from financialtools.pydantic_models import (
     GrowthAssessment,
     LiquidityAssessment,
     ProfitabilityAssessment,
+    QuantitativeOverviewAssessment,
     RedFlagsAssessment,
     SolvencyAssessment,
     StockRegimeAssessment,
@@ -81,6 +82,7 @@ from financialtools.prompts import (
     system_prompt_growth,
     system_prompt_liquidity,
     system_prompt_profitability,
+    system_prompt_quantitative_overview,
     system_prompt_red_flags,
     system_prompt_solvency,
 )
@@ -93,13 +95,14 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TOPIC_MAP: dict[str, tuple[str, type]] = {
-    "liquidity":     (system_prompt_liquidity,     LiquidityAssessment),
-    "solvency":      (system_prompt_solvency,       SolvencyAssessment),
-    "profitability": (system_prompt_profitability,  ProfitabilityAssessment),
-    "efficiency":    (system_prompt_efficiency,     EfficiencyAssessment),
-    "cash_flow":     (system_prompt_cash_flow,      CashFlowAssessment),
-    "growth":        (system_prompt_growth,         GrowthAssessment),
-    "red_flags":     (system_prompt_red_flags,      RedFlagsAssessment),
+    "liquidity":              (system_prompt_liquidity,             LiquidityAssessment),
+    "solvency":               (system_prompt_solvency,              SolvencyAssessment),
+    "profitability":          (system_prompt_profitability,         ProfitabilityAssessment),
+    "efficiency":             (system_prompt_efficiency,            EfficiencyAssessment),
+    "cash_flow":              (system_prompt_cash_flow,             CashFlowAssessment),
+    "growth":                 (system_prompt_growth,                GrowthAssessment),
+    "red_flags":              (system_prompt_red_flags,             RedFlagsAssessment),
+    "quantitative_overview":  (system_prompt_quantitative_overview, QuantitativeOverviewAssessment),
 }
 
 # Human message template shared by all topic chains.
@@ -163,6 +166,7 @@ class TopicAnalysisResult:
     cash_flow: Optional[CashFlowAssessment] = None
     growth: Optional[GrowthAssessment] = None
     red_flags: Optional[RedFlagsAssessment] = None
+    quantitative_overview: Optional[QuantitativeOverviewAssessment] = None
     regime: Optional[StockRegimeAssessment] = None
     evaluate_output: dict = field(default_factory=dict)
 
@@ -178,17 +182,18 @@ class TopicAnalysisResult:
             return obj.model_dump() if obj is not None else None
 
         return {
-            "ticker":       self.ticker,
-            "sector":       self.sector,
-            "year":         self.year,
-            "liquidity":    _dump(self.liquidity),
-            "solvency":     _dump(self.solvency),
-            "profitability":_dump(self.profitability),
-            "efficiency":   _dump(self.efficiency),
-            "cash_flow":    _dump(self.cash_flow),
-            "growth":       _dump(self.growth),
-            "red_flags":    _dump(self.red_flags),
-            "regime":       _dump(self.regime),
+            "ticker":                self.ticker,
+            "sector":                self.sector,
+            "year":                  self.year,
+            "liquidity":             _dump(self.liquidity),
+            "solvency":              _dump(self.solvency),
+            "profitability":         _dump(self.profitability),
+            "efficiency":            _dump(self.efficiency),
+            "cash_flow":             _dump(self.cash_flow),
+            "growth":                _dump(self.growth),
+            "red_flags":             _dump(self.red_flags),
+            "quantitative_overview": _dump(self.quantitative_overview),
+            "regime":                _dump(self.regime),
         }
 
 
@@ -211,12 +216,12 @@ def _build_weights(sector: str) -> pd.DataFrame:
         sector_weights_dict = sec_sector_metric_weights[sector]
     else:
         _logger.warning(
-            "Sector '%s' not found in sec_sector_metric_weights — using 'Default'. "
+            "Sector '%s' not found in sec_sector_metric_weights — using 'default'. "
             "Valid sectors: %s",
             sector,
             sorted(sec_sector_metric_weights.keys()),
         )
-        sector_weights_dict = sec_sector_metric_weights["Default"]
+        sector_weights_dict = sec_sector_metric_weights["default"]
 
     # Build the weights DataFrame from the canonical sector config — single source of truth.
     return pd.DataFrame({

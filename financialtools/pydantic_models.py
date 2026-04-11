@@ -11,6 +11,8 @@ EfficiencyAssessment           — asset turnover + working capital chain
 CashFlowAssessment             — FCF / OCF metrics + capital-allocation narrative
 GrowthAssessment               — revenue / income / FCF growth + dilution
 RedFlagsAssessment             — cash-flow flags, threshold flags, and quality ratios
+QuantitativeOverviewAssessment — cross-cutting composite score trends, valuation context,
+                                 scoring profile, and cross-dimensional signal coherence
 ComprehensiveStockAssessment   — composite wrapper containing all seven topic models
 
 Design invariants
@@ -396,6 +398,90 @@ class RedFlagsAssessment(BaseModel):
             "high Accruals (earnings not cash-backed), rapid DebtGrowth, "
             "persistent Dilution, or CapexToDepreciation well above 1.0. "
             "None if no quality concerns are present."
+        ),
+    )
+
+
+class QuantitativeOverviewAssessment(BaseModel):
+    """
+    Cross-cutting quantitative overview synthesising all five payload types.
+
+    Reads: metrics, extended_metrics, eval_metrics, composite_scores, red_flags.
+    Complements the seven topic assessments by surfacing composite score trends,
+    valuation ratios, data coverage, and cross-dimensional signal coherence —
+    patterns that no single topic agent captures in isolation.
+    """
+
+    overall_rating: Literal["strong", "adequate", "weak"] = Field(
+        ...,
+        description=(
+            "Overall fundamental quality rating based on composite score level and trend. "
+            "'strong' = composite score ≥ 3.5 and/or clearly improving; "
+            "'adequate' = composite score 2.5–3.5 or mixed signals across periods; "
+            "'weak' = composite score < 2.5 or clearly deteriorating."
+        ),
+    )
+    composite_trend: Literal["improving", "stable", "deteriorating"] = Field(
+        ...,
+        description=(
+            "Multi-period direction of the composite score. "
+            "'improving' = score rising year-over-year in most periods; "
+            "'stable' = score flat (± 0.2) across periods; "
+            "'deteriorating' = score falling year-over-year in most periods."
+        ),
+    )
+    composite_trend_rationale: str = Field(
+        ...,
+        description=(
+            "Concise explanation of the composite score trajectory. "
+            "Reference specific score values and years. "
+            "Identify which sub-dimensions (profitability, leverage, liquidity, "
+            "efficiency, cash flow) drove the overall change where identifiable."
+        ),
+    )
+    scoring_profile: str = Field(
+        ...,
+        description=(
+            "Summary of the score distribution across the composite sub-dimensions "
+            "(profitability, efficiency, leverage, liquidity, cash_flow). "
+            "Identify the strongest and weakest groups and whether the profile "
+            "is balanced or concentrated in specific areas."
+        ),
+    )
+    valuation_context: str = Field(
+        ...,
+        description=(
+            "Assessment of valuation metrics from eval_metrics: "
+            "P/E, P/B, P/FCF, EarningsYield, FCFYield. "
+            "Note whether the stock appears cheap or expensive relative to its "
+            "earnings and cash-flow quality. State explicitly if data is unavailable."
+        ),
+    )
+    cross_dimensional_signals: str = Field(
+        ...,
+        description=(
+            "Patterns or contradictions appearing consistently across multiple metric groups. "
+            "Examples: high profitability scores alongside poor cash conversion (earnings quality risk); "
+            "strong liquidity with high leverage (structural imbalance); "
+            "composite score improving despite rising red flags (surface vs. underlying quality). "
+            "If the picture is coherent with no notable contradictions, state that explicitly."
+        ),
+    )
+    data_completeness: Literal["complete", "partial", "sparse"] = Field(
+        ...,
+        description=(
+            "Coverage assessment across all metrics and time periods. "
+            "'complete' = all major metrics present for 3+ years with no significant gaps; "
+            "'partial' = some metrics NaN or fewer than 3 years of data; "
+            "'sparse' = significant gaps, only 1–2 years, or many NaN columns."
+        ),
+    )
+    concerns: Optional[str] = Field(
+        None,
+        description=(
+            "Material concerns not captured above: structural deterioration across multiple "
+            "dimensions, extreme or unreliable valuation, data anomalies affecting analysis "
+            "reliability. None if no additional concerns exist."
         ),
     )
 

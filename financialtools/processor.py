@@ -323,6 +323,18 @@ def _empty_result() -> dict:
 # Used as documentation and for score_metric() threshold key alignment.
 # evaluate() and compute_scores() derive value_vars dynamically from compute_metrics()
 # output columns so that adding a new metric to compute_metrics() is automatically scored.
+# Columns that compute_metrics() accesses with hard bracket notation.
+# Financial-sector tickers (banks, insurance) structurally omit some of these.
+# compute_metrics() fills any absent column with np.nan so formulas that use them
+# produce NaN scores instead of raising KeyError.
+_REQUIRED_METRIC_COLS: tuple = (
+    "gross_profit",       # absent for banks (no COGS)
+    "operating_income",   # absent for banks (use pretax_income instead in Option B)
+    "ebitda",             # absent for banks
+    "current_assets",     # absent for banks (different BS layout)
+    "current_liabilities",# absent for banks
+)
+
 SCORED_METRICS: list = [
     # Original 11
     "GrossMargin",
@@ -468,6 +480,18 @@ class FundamentalTraderAssistant:
     def compute_metrics(self):
         try:
             d = self.d.copy()
+
+            # Ensure columns that some sectors (e.g. banks) structurally omit are
+            # present before any formula references them.  Missing columns become a
+            # column of NaN, so all downstream safe_div() calls produce NaN scores
+            # instead of raising KeyError.  See _REQUIRED_METRIC_COLS.
+            for _col in _REQUIRED_METRIC_COLS:
+                if _col not in d.columns:
+                    _logger.warning(
+                        "[%s] column '%s' absent — metric(s) that depend on it will be NaN",
+                        self.ticker, _col,
+                    )
+                    d[_col] = np.nan
 
             # ── Profitability Margins ─────────────────────────────────────────
             d["GrossMargin"] = self.safe_div(d["gross_profit"], d["total_revenue"])
@@ -653,7 +677,10 @@ class FundamentalTraderAssistant:
 
     def raw_red_flags(self):
         try:
-            d = self.d[["ticker", "time", "free_cash_flow", "operating_cash_flow", "ebitda"]].copy()
+            # reindex instead of hard bracket select: columns absent for some sectors
+            # (e.g. 'ebitda' for banks) are filled with NaN instead of raising KeyError.
+            _cols = ["ticker", "time", "free_cash_flow", "operating_cash_flow", "ebitda"]
+            d = self.d.reindex(columns=_cols).copy()
 
             d["rrf_fcf"] = np.where(d["free_cash_flow"] < 0, "Negative Free Cash Flow", None)
             d["rrf_ocf"] = np.where(d["operating_cash_flow"] < 0, "Negative Operating Cash Flow", None)
@@ -802,7 +829,7 @@ class FundamentalTraderAssistant:
         Output columns: sector, ticker, time, composite_score
 
         Formula: composite_score = sum(score * weights) / sum(weights)
-        Invariant: weights come from sector_metric_weights via the self.weights merge in evaluate().
+        Invariant: weights come from sec_sector_metric_weights via the self.weights merge in evaluate().
         """
         df = df.copy()
         df["weighted_score"] = df["score"] * df["weights"]
@@ -832,6 +859,17 @@ class FundamentalTraderAssistant:
         try:
             # Step 1: Compute metrics
             m = self.compute_metrics()
+
+            # Guard: compute_metrics() returns an empty DataFrame on failure.
+            # Without this check the melt() below crashes with a misleading
+            # KeyError (ticker/time absent) that obscures the real root cause.
+            if m.empty:
+                _logger.error(
+                    "[%s] compute_metrics() returned empty — evaluate() aborted.",
+                    self.ticker,
+                )
+                return _empty_result()
+
             ev = self.compute_valuation_metrics()
 
             # Step 2: Detect raw red flags (custom logic, if defined elsewhere)

@@ -39,7 +39,7 @@ Pipeline stages
 Design invariants
 -----------------
 - One ticker downloaded at a time (sequential) to respect yfinance rate limits.
-- Each ticker is evaluated using the weights for its own sector from config.sector_metric_weights.
+- Each ticker is evaluated using the weights for its own sector from config.sec_sector_metric_weights.
 - Unknown sectors fall back to "Default" with a warning.
 - On --resume, sectors whose checkpoint file already exists are skipped entirely.
 - Benchmark files are always recomputed from the full metrics.xlsx after export,
@@ -55,7 +55,7 @@ from typing import Optional
 import pandas as pd
 
 # --- package imports --------------------------------------------------------
-from financialtools.config import sector_metric_weights
+from financialtools.config import sec_sector_metric_weights
 from financialtools.processor import Downloader, _empty_result
 from financialtools.utils import get_tickers
 from financialtools.wrappers import export_financial_results, merge_results
@@ -91,16 +91,16 @@ def _build_weights(sector: str) -> pd.DataFrame:
     """
     Build a weights DataFrame for a given sector.
 
-    Falls back to 'Default' if the sector is not in sector_metric_weights.
+    Falls back to 'default' if the sector is not in sec_sector_metric_weights.
     Returned columns: metrics, weights, sector.
     """
-    if sector in sector_metric_weights:
-        raw = sector_metric_weights[sector]
+    if sector in sec_sector_metric_weights:
+        raw = sec_sector_metric_weights[sector]
     else:
         logger.warning(
-            f"Sector '{sector}' not in sector_metric_weights — using 'Default'."
+            f"Sector '{sector}' not in sec_sector_metric_weights — using 'default'."
         )
-        raw = sector_metric_weights["Default"]
+        raw = sec_sector_metric_weights["default"]
 
     return (
         pd.DataFrame(list(raw.items()), columns=["metrics", "weights"])
