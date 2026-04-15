@@ -1,3 +1,4 @@
+import re
 import time
 import pandas as pd
 import polars as pl
@@ -78,6 +79,14 @@ class DownloaderWrapper:
         Internal helper: Download and return data for a single ticker.
         Returns None if download fails.
         Logs to multiple files with timestamp and ticker context.
+
+        Enrichment (mirrors _download_and_evaluate in agents/_tools/data_tools.py)
+        --------------------------------------------------------------------------
+        After downloading merged financials, calls get_info_data() to attach two
+        columns to the result:
+          - company_name : lowercased longName from yfinance info, falls back to ticker
+          - sector       : lowercased, hyphenated sectorKey (e.g. "financial-services"),
+                           falls back to "default"
         """
         logger.info(f"[{ticker}] Starting download")
         try:
@@ -86,6 +95,26 @@ class DownloaderWrapper:
             merged_data = processor.get_merged_data()
             merged_data.columns = merged_data.columns.str.lower().str.replace(" ", "_")
             merged_data = DownloaderWrapper._preprocess_df(merged_data)
+
+            # ── Enrich: company name ─────────────────────────────────────────
+            info_df = processor.get_info_data()
+            if not info_df.empty and "longName" in info_df.columns:
+                company_name = info_df["longName"].str.lower().to_string(index=False).strip()
+            else:
+                company_name = ticker.lower()
+                logger.warning(f"[{ticker}] longName not found in info; using ticker as name")
+
+            # ── Enrich: sector ───────────────────────────────────────────────
+            if not info_df.empty and "sector" in info_df.columns:
+                raw = info_df["sector"].str.lower().to_string(index=False)
+                sector = re.sub(r" ", "-", raw.strip())
+            else:
+                sector = "default"
+                logger.warning(f"[{ticker}] sector not found in info; using 'default'")
+
+            merged_data["company_name"] = company_name
+            merged_data["sector"] = sector
+
             logger.info(f"[{ticker}] Download and processing successful")
             return merged_data
         except Exception as e:

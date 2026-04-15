@@ -49,6 +49,7 @@ Design invariants
 import argparse
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -57,7 +58,6 @@ import pandas as pd
 # --- package imports --------------------------------------------------------
 from financialtools.config import sec_sector_metric_weights
 from financialtools.processor import Downloader, _empty_result
-from financialtools.utils import get_tickers
 from financialtools.wrappers import export_financial_results, merge_results
 
 # ---------------------------------------------------------------------------
@@ -127,8 +127,8 @@ def _load_ticker_list(filepath: str) -> pd.DataFrame:
     Expected columns: ticker, sector.  Extra columns are allowed and ignored.
     Returns a DataFrame with columns [ticker, sector].
     """
-    df = get_tickers(filepath=filepath)       # Polars DataFrame
-    return df.select(["ticker", "sector"]).to_pandas()
+    df = pd.read_csv(filepath, sep="\t")
+    return df[["ticker", "sector"]]
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +157,22 @@ def download_sector(
             time.sleep(sleep_seconds)
             d = Downloader.from_ticker(ticker)
             df = d.get_merged_data()
+
+            # ── Enrich: company name (mirrors wrappers.py / data_tools.py) ───
+            # Sector is already known from the ticker file; only company_name
+            # requires the extra get_info_data() call.
+            info_df = d.get_info_data()
+            if not info_df.empty and "longName" in info_df.columns:
+                company_name = info_df["longName"].str.lower().to_string(index=False).strip()
+            else:
+                company_name = ticker.lower()
+                logger.warning(
+                    f"  [{i}/{total}] {ticker}: longName not found in info; using ticker as name"
+                )
+
+            if not df.empty:
+                df["company_name"] = company_name
+
             results[ticker] = df
             if df.empty:
                 logger.warning(f"  [{i}/{total}] {ticker}: download succeeded but merged data is empty")
