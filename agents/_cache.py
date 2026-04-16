@@ -10,9 +10,9 @@ read the cache and only run their own LLM chain — no redundant yfinance calls.
 Cache layout
 ------------
 agents/.cache/
-└── {ticker}_{year}/
-    ├── payloads.json      # five JSON payloads + metadata (written by manager)
-    └── {topic}.json       # topic assessment result (written by subagent)
+└── {ticker}__{year}/          # double-underscore separator (avoids ticker-name collisions)
+    ├── payloads.json           # five JSON payloads + metadata (written by manager)
+    └── {topic}.json            # topic assessment result (written by subagent)
 
 Public API
 ----------
@@ -48,12 +48,17 @@ def cache_key(ticker: str, year: int | None) -> str:
     """
     Build a filesystem-safe cache key for a ticker + optional year.
 
+    Uses ``__`` as separator to avoid ambiguity with tickers that contain
+    underscores (e.g. ``TICKER_A__2023`` vs the old ``TICKER_A_2023`` which
+    would collide with a hypothetical ``TICKER`` + ``A_2023`` key).
+
     Examples
     --------
-    cache_key("AAPL", 2023) → "AAPL_2023"
-    cache_key("eni.mi", None) → "ENI.MI_all"
+    cache_key("AAPL", 2023)    → "AAPL__2023"
+    cache_key("eni.mi", None)  → "ENI.MI__all"
+    cache_key("BRK_B", 2022)   → "BRK_B__2022"
     """
-    return f"{ticker.upper()}_{year if year is not None else 'all'}"
+    return f"{ticker.upper()}__{year if year is not None else 'all'}"
 
 
 def _cache_dir(key: str) -> str:

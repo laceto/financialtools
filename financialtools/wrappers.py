@@ -16,34 +16,48 @@ import traceback
 # the module is imported from (tests/, notebooks/, scripts/, CI, etc.).
 import os as _os
 _LOGS_DIR = _os.path.join(_os.path.dirname(__file__), '..', 'logs')
-_os.makedirs(_LOGS_DIR, exist_ok=True)
 
-# Create logger
+# Logger instance — created at import time (cheap, no I/O).
+# File handlers are added lazily by _configure_logging() on first use so that
+# importing DownloaderWrapper in tests does not create log files as a side
+# effect (M5 fix).
 logger = logging.getLogger('TickerDownloader')
 logger.setLevel(logging.DEBUG)
 
-# Formatter with timestamp and message
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+_handlers_configured = False
 
-# Info handler
-info_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'info.log'))
-info_handler.setLevel(logging.INFO)
-info_handler.setFormatter(formatter)
 
-# Error handler
-error_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'error.log'))
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(formatter)
+def _configure_logging() -> None:
+    """
+    Attach file handlers to the TickerDownloader logger on first use.
 
-# Debug handler
-debug_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'debug.log'))
-debug_handler.setLevel(logging.DEBUG)
-debug_handler.setFormatter(formatter)
+    Called lazily so that unit tests which import wrappers without intending
+    to perform any downloads do not trigger log-directory creation or file
+    handle allocation.  Safe to call multiple times — subsequent calls are
+    no-ops guarded by the module-level ``_handlers_configured`` flag.
+    """
+    global _handlers_configured
+    if _handlers_configured:
+        return
+    _os.makedirs(_LOGS_DIR, exist_ok=True)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-# Add handlers
-logger.addHandler(info_handler)
-logger.addHandler(error_handler)
-logger.addHandler(debug_handler)
+    info_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'info.log'))
+    info_handler.setLevel(logging.INFO)
+    info_handler.setFormatter(formatter)
+
+    error_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'error.log'))
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+
+    debug_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'debug.log'))
+    debug_handler.setLevel(logging.DEBUG)
+    debug_handler.setFormatter(formatter)
+
+    logger.addHandler(info_handler)
+    logger.addHandler(error_handler)
+    logger.addHandler(debug_handler)
+    _handlers_configured = True
 
 
 
@@ -88,6 +102,7 @@ class DownloaderWrapper:
           - sector       : lowercased, hyphenated sectorKey (e.g. "financial-services"),
                            falls back to "default"
         """
+        _configure_logging()
         logger.info(f"[{ticker}] Starting download")
         try:
             time.sleep(2)  # avoid hitting rate limits
@@ -124,16 +139,50 @@ class DownloaderWrapper:
 
 
     @staticmethod
-    def _download_multiple_tickers(tickers: list[str]) -> pd.DataFrame | None:
+    def _download_multiple_tickers(
+        tickers: list[str],
+        max_workers: int = 4,
+    ) -> pd.DataFrame | None:
         """
-        Internal helper: Download and combine data for multiple tickers.
-        Returns None if all downloads fail.
+        Internal helper: Download and combine data for multiple tickers in parallel.
+
+        Uses ``ThreadPoolExecutor`` so network I/O for different tickers overlaps.
+        Each worker calls ``_download_single_ticker``, which already handles its
+        own exceptions and returns ``None`` on failure — no ticker failure
+        propagates to other workers or to the caller.
+
+        Parameters
+        ----------
+        tickers     : List of ticker symbols to download.
+        max_workers : Thread pool size (default 4). Keep this low — yfinance
+                      is rate-sensitive and each thread may trigger a brief
+                      ``time.sleep(2)`` inside ``_download_single_ticker``.
+
+        Returns
+        -------
+        pd.DataFrame
+            All successful downloads concatenated, in completion order.
+        None
+            If every ticker failed.
         """
-        fin_data = []
-        for ticker in tickers:
-            data = DownloaderWrapper._download_single_ticker(ticker)
-            if data is not None:
-                fin_data.append(data)
+        _configure_logging()
+        fin_data: list[pd.DataFrame] = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(DownloaderWrapper._download_single_ticker, t): t
+                for t in tickers
+            }
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    # _download_single_ticker should never raise, but guard anyway.
+                    logger.error("[%s] Unexpected exception in download worker: %s", ticker, exc, exc_info=True)
+                    result = None
+                if result is not None:
+                    fin_data.append(result)
 
         if not fin_data:
             return None

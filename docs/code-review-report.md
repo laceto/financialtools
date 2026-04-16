@@ -18,7 +18,7 @@
 | S4 — `from_ticker()` swallows all exceptions | ✅ Fixed | `processor.py:from_ticker` |
 | S5 — Private helpers imported cross-package | ✅ Fixed | `analysis.py:build_weights` |
 | S6 — No cache invalidation | ✅ Fixed | `_cache.py:clear_cache` |
-| M1–M10 | ⬜ Open | various |
+| M1–M10 | ✅ Fixed | various |
 
 ---
 
@@ -28,7 +28,7 @@
 2. ~~One **blocking API bug**: `FundamentalEvaluator` passes a raw `dict` where `FundamentalTraderAssistant` expects a `pd.DataFrame`.~~ **Fixed.**
 3. ~~The **retry logic in `_invoke_chain`** makes 3 LLM calls on a parse error instead of 2, and fixes the wrong output.~~ **Fixed.**
 4. ~~**Silent `_empty_result()` on `evaluate()` failure** propagates empty DataFrames to the LLM unchecked, producing hallucinated assessments.~~ **Fixed.**
-5. The **public API surface is empty** — `__init__.py` exports nothing; two dead config dicts inflate `config.py` by ~170 lines.
+5. ~~The **public API surface is empty** — `__init__.py` exports nothing; two dead config dicts inflate `config.py` by ~170 lines.~~ **Fixed (M1, M3).**
 
 Overall the codebase is well-structured at the macro level — the 3-stage pipeline is clear, invariants are documented, and the agent layer cleanly separates from the library. The issues are concentrated in error-handling contracts and a few sharp edges in the threading and retry layers.
 
@@ -90,72 +90,55 @@ Usage: `agent.invoke({"ticker": "AAPL", "year": 2023, "force_refresh": True}, co
 
 ## Minor Issues and Suggestions
 
-### M1 — `sector_metric_weights` and `grouped_weights` in `config.py` appear unused
+### ✅ M1 — `sector_metric_weights` and `grouped_weights` in `config.py` appear unused
 **File:** `financialtools/config.py:30–202`
 **Owner:** Architecture & Code Quality
+**Resolution:** Both dicts retained (confirmed not in active pipeline code — no live imports found) and each annotated with a multi-line comment block explaining their purpose and status: `grouped_weights` is a legacy human-readable display structure (grouped by category label, title-case) used in notebooks; `sector_metric_weights` is the legacy title-case sector dict for `chains.py` backward compatibility, superseded by `sec_sector_metric_weights` (yfinance sectorKey convention) for all active code paths.
 
-Neither structure is imported by any live code path. Both add ~170 lines. Remove after confirming no notebook usage, or add a comment with their intended use case.
-
-### M2 — `chains.py` is likely legacy with no deprecation marker
+### ✅ M2 — `chains.py` is likely legacy with no deprecation marker
 **File:** `chains.py`
 **Owner:** Devil's Advocate / Architecture
+**Resolution:** Added a 12-line deprecation block at the top of `chains.py` with: (1) a `# DEPRECATED` heading, (2) explanation of the Excel-file dependency, (3) a side-by-side migration guide (`chains.get_stock_evaluation_report` → `run_topic_analysis`), (4) a pointer to `financialtools/analysis.py`. Also added the M8 `OPENAI_API_KEY` guard here (see M8).
 
-`chains.py` reads pre-computed Excel files. `analysis.py` is self-contained. No doc or comment tells callers which to prefer.
-
-**Fix:** Add `# DEPRECATED: prefer financialtools.analysis.run_topic_analysis()` at the top of `chains.py`, or remove it if no callers remain.
-
-### M3 — `__init__.py` exports nothing
+### ✅ M3 — `__init__.py` exports nothing
 **File:** `financialtools/__init__.py`
 **Owner:** API & DX
+**Resolution:** `__init__.py` now exports the full public API surface via `__all__`: `Downloader`, `FundamentalTraderAssistant`, `DownloaderWrapper`, `FundamentalEvaluator`, `run_topic_analysis`, `build_weights`, `filter_year`, `normalise_time`, `merge_results`, `RateLimiter`, `DownloadError`, `EvaluationError`, `SectorNotFoundError`. The three analysis helpers were added as part of S5; `RateLimiter` added as part of M9; `merge_results` added here.
 
-Empty init means no public API contract. Add explicit re-exports for the primary surface: `Downloader`, `DownloaderWrapper`, `FundamentalTraderAssistant`, `FundamentalEvaluator`, `run_topic_analysis`, and all exception classes.
-
-### M4 — `architecture.md` incorrectly lists package files as "repo root"
+### ✅ M4 — `architecture.md` incorrectly lists package files as "repo root"
 **File:** `architecture.md` module table
 **Owner:** Architecture & Code Quality
+**Resolution:** `analysis.py`, `pydantic_models.py`, `prompts.py`, `exceptions.py` moved from the "Repo root" table into the "Package (`financialtools/`)" table with updated descriptions. `chains.py` entry updated to show its deprecated status. `agents/` entry updated (8 subgraphs, `clear_cache` invalidation). `processor.py` and `utils.py` entries updated to reflect `RateLimiter` move (M9). Stale `_build_weights()` / `_normalise_time()` / `_filter_year()` references in data flow updated to public names (S5).
 
-`analysis.py`, `pydantic_models.py`, `prompts.py` are inside `financialtools/`, not at repo root. Only `chains.py` is at repo root. The doc misleads contributors.
-
-### M5 — `wrappers.py` configures file handlers at module import time
+### ✅ M5 — `wrappers.py` configures file handlers at module import time
 **File:** `financialtools/wrappers.py:22–46`
 **Owner:** Architecture & Code Quality
+**Resolution:** Module-level `FileHandler` creation and `os.makedirs` replaced with a `_configure_logging()` function guarded by a `_handlers_configured: bool` flag. Logger instance is still created at import time (cheap, no I/O). File handlers are attached only when `_configure_logging()` is called for the first time, which happens at the top of `_download_single_ticker` (and at the top of `_download_multiple_tickers`). Tests that import `DownloaderWrapper` without downloading any data no longer create `logs/` or open file handles.
 
-Three `FileHandler` instances are opened and `logs/` is created on every import. Tests that import `DownloaderWrapper` create log files as a side effect. Move handler setup to a lazy init or explicit `configure_logging()`.
-
-### M6 — `SCORED_METRICS` list is documentation, not enforcement
+### ✅ M6 — `SCORED_METRICS` list is documentation, not enforcement
 **File:** `financialtools/processor.py:338–365`
 **Owner:** Architecture & Code Quality
+**Resolution:** Added `TestScoredMetricsEnforcement` test class to `tests/test_processor.py`. The test calls `compute_metrics()` on a synthetic DataFrame, derives the actual metric columns dynamically (excluding `ticker`, `time`, `sector`), and asserts `set(SCORED_METRICS) == actual_metric_cols` with a diagnostic diff message. This is a live enforcement test — unlike the existing `test_scored_metrics_constant_matches` which compares two static lists, this test catches drift between the constant and the implementation.
 
-`evaluate()` derives scored columns dynamically, so `SCORED_METRICS` can silently drift from reality. Add a test: `assert set(SCORED_METRICS) == set(actual_scored_columns_from_compute_metrics)`.
-
-### M7 — `_download_multiple_tickers` is sequential, not parallel
+### ✅ M7 — `_download_multiple_tickers` is sequential, not parallel
 **File:** `financialtools/wrappers.py:127–140`
 **Owner:** API & DX
+**Resolution:** Replaced the sequential `for ticker in tickers` loop with a `ThreadPoolExecutor` + `as_completed` pattern, matching the approach already used by `FundamentalEvaluator.evaluate_multiple`. Added `max_workers: int = 4` parameter (default conservative to respect yfinance rate limits — each worker has a 2-second sleep). `_configure_logging()` called at the start. Worker exceptions are caught and logged as errors (though `_download_single_ticker` already catches all exceptions and returns `None`).
 
-Name and placement imply parallel download, but it is a for-loop. Document the sequential behavior or parallelize with `ThreadPoolExecutor`.
-
-### M8 — `OPENAI_API_KEY` absence fails silently until first LLM call
-**File:** `chains.py:1`, `financialtools/analysis.py:57`
+### ✅ M8 — `OPENAI_API_KEY` absence fails silently until first LLM call
+**File:** `chains.py:1`, `financialtools/analysis.py`
 **Owner:** API & DX
+**Resolution:** Two-site change: (1) `chains.py` — module-level guard added after `load_dotenv()` (safe here since `chains.py` is not imported in any unit test); (2) `analysis.py` — guard added inside `run_topic_analysis()` before any network or LLM work (not at module level, to avoid breaking unit tests that import the module without an API key set). Both raise `EnvironmentError` with a clear message pointing to the `.env` file. `import os` added to `analysis.py` imports.
 
-Add an early guard at module load:
-```python
-import os
-if not os.getenv("OPENAI_API_KEY"):
-    raise EnvironmentError("OPENAI_API_KEY not set — check your .env file")
-```
-
-### M9 — `RateLimiter` belongs in `utils.py`, not `processor.py`
+### ✅ M9 — `RateLimiter` belongs in `utils.py`, not `processor.py`
 **File:** `financialtools/processor.py:15`
 **Owner:** Architecture & Code Quality
+**Resolution:** `RateLimiter` class (65 lines) moved to `financialtools/utils.py`. Deferred `import threading` replaced with a top-level `import threading`. `from time import sleep` replaced with `time.sleep(...)` for consistency. In `processor.py`, the class body replaced with `from financialtools.utils import RateLimiter  # noqa: F401` so that `from financialtools.processor import RateLimiter` continues to work without change. Unused `from time import sleep` removed from `processor.py`. `RateLimiter` added to `financialtools/__init__.py`.
 
-`RateLimiter` is a generic threading utility with no financial domain logic. Move to `utils.py`.
-
-### M10 — `cache_key` separator could theoretically collide
+### ✅ M10 — `cache_key` separator could theoretically collide
 **File:** `agents/_cache.py:51`
 **Owner:** Performance & Reliability
-
-`cache_key("TICKER_A", 2023)` → `"TICKER_A_2023"`. Low probability today, but use `"::"` as separator for safety.
+**Resolution:** Separator changed from `_` to `__` (double underscore). `::` was the originally suggested separator but is invalid on Windows (`:`is a reserved character in Windows paths). `__` is safe on all platforms and eliminates the collision: `cache_key("TICKER_A", 2023)` → `"TICKER_A__2023"` is unambiguous even for tickers containing underscores (e.g. `BRK_B`). Docstring examples updated. Cache layout comment in module docstring updated. Existing `.cache/` entries use the old naming and will be treated as cache misses, triggering a fresh download — the safe behavior.
 
 ---
 
@@ -171,10 +154,16 @@ if not os.getenv("OPENAI_API_KEY"):
 | P1 | S4 — from_ticker() swallows all exceptions | ✅ Fixed | Performance | `processor.py:from_ticker` |
 | P1 | S5 — private helpers imported cross-package | ✅ Fixed | Architecture | `analysis.py:build_weights` |
 | P1 | S6 — no cache invalidation | ✅ Fixed | Performance | `_cache.py:clear_cache` |
-| P2 | M1 — dead weight dicts in config.py | ⬜ Open | Architecture | `config.py:30` |
-| P2 | M2 — chains.py has no deprecation marker | ⬜ Open | Devil's Advocate | `chains.py` |
-| P2 | M3 — __init__.py exports nothing | ⬜ Open | API & DX | `__init__.py` |
-| P3 | M4–M10 — docs, logging, naming improvements | ⬜ Open | Architecture / DX | various |
+| P2 | M1 — dead weight dicts in config.py | ✅ Fixed | Architecture | `config.py:30` |
+| P2 | M2 — chains.py has no deprecation marker | ✅ Fixed | Devil's Advocate | `chains.py` |
+| P2 | M3 — __init__.py exports nothing | ✅ Fixed | API & DX | `__init__.py` |
+| P3 | M4 — architecture.md wrong module locations | ✅ Fixed | Architecture | `architecture.md` |
+| P3 | M5 — wrappers.py module-level logging | ✅ Fixed | Architecture | `wrappers.py` |
+| P3 | M6 — SCORED_METRICS not enforced by test | ✅ Fixed | Architecture | `test_processor.py` |
+| P3 | M7 — _download_multiple_tickers sequential | ✅ Fixed | API & DX | `wrappers.py` |
+| P3 | M8 — OPENAI_API_KEY silent failure | ✅ Fixed | API & DX | `chains.py`, `analysis.py` |
+| P3 | M9 — RateLimiter in wrong module | ✅ Fixed | Architecture | `utils.py` |
+| P3 | M10 — cache_key separator collision risk | ✅ Fixed | Performance | `_cache.py` |
 
 ---
 

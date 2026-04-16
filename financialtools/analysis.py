@@ -48,6 +48,7 @@ Debugging
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -415,6 +416,13 @@ def run_topic_analysis(
     - LangSmith tracing is enabled automatically if LANGSMITH_API_KEY is set.
     - All LLM calls use temperature=0 for deterministic output.
     """
+    # Fail fast before any network or LLM work if the key is missing.
+    if not os.getenv("OPENAI_API_KEY"):
+        raise EnvironmentError(
+            "OPENAI_API_KEY not set — add it to your .env file (OPENAI_API_KEY=sk-...).\n"
+            "run_topic_analysis() requires an OpenAI key to call the LLM chains."
+        )
+
     result = TopicAnalysisResult(ticker=ticker, sector=sector, year=year)
 
     # ------------------------------------------------------------------

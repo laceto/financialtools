@@ -1,7 +1,80 @@
 import json
+import threading
 import time
 
 import pandas as pd
+
+
+class RateLimiter:
+    """
+    Thread-safe sliding-window rate limiter.
+
+    Enforces three independent windows simultaneously:
+      per_minute  — max calls within any 60-second window
+      per_hour    — max calls within any 3600-second window
+      per_day     — max calls within any 86400-second window
+
+    acquire() blocks until all three windows have a free slot, then records
+    the call timestamp atomically.
+
+    Design invariant
+    ----------------
+    The internal lock is held only during the window-check and the atomic
+    ``self.calls.append`` on success.  It is *never* held during ``sleep()``
+    so that other threads can check their own windows concurrently (C1 fix).
+
+    Usage
+    -----
+    limiter = RateLimiter(per_minute=30)
+    limiter.acquire()     # blocks if limit exceeded
+    make_api_call()
+    """
+
+    def __init__(self, per_minute: int = 60, per_hour: int = 360, per_day: int = 8000):
+        self.per_minute = per_minute
+        self.per_hour   = per_hour
+        self.per_day    = per_day
+        self.calls: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """
+        Block until a call is permissible under all three rate limits.
+
+        Uses sliding-window checks. Refreshes timestamps after each sleep so
+        stale values do not cause limit overruns.
+
+        Invariant: self._lock is held only while reading/writing self.calls,
+        never during sleep(). Holding the lock across sleep() would serialise
+        all threads — they would queue on the lock rather than on the rate
+        window, defeating the purpose of the limiter entirely.
+        """
+        while True:
+            with self._lock:
+                now = time.time()
+                # Prune calls older than 24 h to bound list growth.
+                self.calls = [t for t in self.calls if now - t < 86400]
+
+                calls_last_minute = [t for t in self.calls if now - t < 60]
+                calls_last_hour   = [t for t in self.calls if now - t < 3600]
+
+                wait = 0.0
+                if len(calls_last_minute) >= self.per_minute and calls_last_minute:
+                    wait = max(wait, 60 - (now - calls_last_minute[0]))
+                if len(calls_last_hour) >= self.per_hour and calls_last_hour:
+                    wait = max(wait, 3600 - (now - calls_last_hour[0]))
+                if len(self.calls) >= self.per_day and self.calls:
+                    wait = max(wait, 86400 - (now - self.calls[0]))
+
+                if wait <= 0.0:
+                    # All windows have a free slot — record the call and return.
+                    self.calls.append(time.time())
+                    return
+
+            # Lock released before sleeping so other threads can check their
+            # own windows concurrently. Re-enter loop to recompute with fresh
+            # timestamps after waking.
+            time.sleep(max(0.0, wait))
 
 
 def export_to_csv(df, path):

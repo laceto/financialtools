@@ -494,5 +494,38 @@ class TestBankLikeDataNoKeyError(unittest.TestCase):
         self.assertFalse(result["metrics"].empty)
 
 
+class TestScoredMetricsEnforcement(unittest.TestCase):
+    """
+    M6 guard: SCORED_METRICS must exactly match the columns produced by
+    compute_metrics() minus the identity columns (ticker, time, sector).
+
+    This test catches drift between the documentation constant and the live
+    implementation — if a metric is added to compute_metrics() without
+    updating SCORED_METRICS (or vice-versa), the test fails immediately.
+    """
+
+    _ID_COLS = {"ticker", "time", "sector"}
+
+    def test_scored_metrics_matches_compute_metrics_output(self):
+        """
+        SCORED_METRICS must list exactly the columns that compute_metrics()
+        produces, excluding identity columns.
+        """
+        fta = _make_fta()
+        m = fta.compute_metrics()
+        actual_metric_cols = {c for c in m.columns if c not in self._ID_COLS}
+        self.assertEqual(
+            set(SCORED_METRICS),
+            actual_metric_cols,
+            msg=(
+                f"SCORED_METRICS is out of sync with compute_metrics() output.\n"
+                f"  In SCORED_METRICS but NOT in compute_metrics(): "
+                f"{set(SCORED_METRICS) - actual_metric_cols}\n"
+                f"  In compute_metrics() but NOT in SCORED_METRICS: "
+                f"{actual_metric_cols - set(SCORED_METRICS)}"
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

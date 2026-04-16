@@ -1,7 +1,6 @@
 import yfinance as yf
 import os
 import pandas as pd
-from time import sleep
 from typing import Dict, Any, List
 from financialtools.exceptions import DownloadError, EvaluationError
 import numpy as np
@@ -12,69 +11,12 @@ import logging as _logging
 _logger = _logging.getLogger(__name__)
 
 
-class RateLimiter:
-    """
-    Token-bucket style rate limiter with sliding-window guards.
-
-    Thread-safe: all state mutations are protected by a threading.Lock.
-    acquire() is safe to call from multiple threads sharing one instance.
-
-    Limits:
-      per_minute  — max calls within any 60-second window
-      per_hour    — max calls within any 3600-second window
-      per_day     — max calls within any 86400-second window
-
-    acquire() sleeps until all three windows have a free slot, then records
-    the call timestamp.
-    """
-
-    def __init__(self, per_minute=60, per_hour=360, per_day=8000):
-        import threading
-        self.per_minute = per_minute
-        self.per_hour = per_hour
-        self.per_day = per_day
-        self.calls = []
-        self._lock = threading.Lock()
-
-    def acquire(self):
-        """
-        Block until a call is permissible under all three rate limits.
-
-        Uses sliding-window checks. Refreshes timestamps after each sleep so
-        stale-now values do not cause limit overruns.
-
-        Invariant: self._lock is held only while reading/writing self.calls,
-        never during sleep(). Holding the lock across sleep() would serialise
-        all threads — they would queue on the lock rather than on the rate
-        window, defeating the purpose of the limiter entirely.
-        """
-        import time
-        while True:
-            with self._lock:
-                now = time.time()
-                # Prune calls older than 24 h to bound list growth.
-                self.calls = [t for t in self.calls if now - t < 86400]
-
-                calls_last_minute = [t for t in self.calls if now - t < 60]
-                calls_last_hour   = [t for t in self.calls if now - t < 3600]
-
-                wait = 0.0
-                if len(calls_last_minute) >= self.per_minute and calls_last_minute:
-                    wait = max(wait, 60 - (now - calls_last_minute[0]))
-                if len(calls_last_hour) >= self.per_hour and calls_last_hour:
-                    wait = max(wait, 3600 - (now - calls_last_hour[0]))
-                if len(self.calls) >= self.per_day and self.calls:
-                    wait = max(wait, 86400 - (now - self.calls[0]))
-
-                if wait <= 0.0:
-                    # All windows have a free slot — record the call and return.
-                    self.calls.append(time.time())
-                    return
-
-            # Lock released before sleeping so other threads can check their
-            # own windows concurrently. Re-enter loop to recompute with fresh
-            # timestamps after waking.
-            sleep(max(0.0, wait))
+# RateLimiter moved to utils.py (M9 fix — generic threading utility has no
+# financial domain logic; see financialtools/utils.py for the implementation).
+# Re-exported here so existing imports of the form
+#   from financialtools.processor import RateLimiter
+# continue to work without change.
+from financialtools.utils import RateLimiter  # noqa: F401  (re-export)
 
 
 class Downloader:
