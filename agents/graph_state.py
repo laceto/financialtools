@@ -6,7 +6,8 @@ Each node returns a partial dict; LangGraph merges it into the running state.
 
 State lifecycle
 ---------------
-1. Caller supplies:        ticker, sector (optional), year (optional), model (optional)
+1. Caller supplies:        ticker, sector (optional), year (optional), model (optional),
+                           force_refresh (optional, default False)
 2. prepare_data_node adds: cache_key, company_name, resolved_sector,
                            metrics_json, extended_metrics_json, eval_metrics_json,
                            composite_scores_json, red_flags_json
@@ -48,10 +49,11 @@ def _last(a, b):
 
 class AnalysisState(TypedDict, total=False):
     # ── Caller-supplied inputs ─────────────────────────────────────────────
-    ticker: Annotated[str,           _last]   # required
-    sector: Annotated[Optional[str], _last]   # None → auto-detected from yfinance sectorKey
-    year:   Annotated[Optional[int], _last]   # None → all available years
-    model:  Annotated[str,           _last]   # LLM model name; defaults to "gpt-4.1-nano"
+    ticker:        Annotated[str,            _last]  # required
+    sector:        Annotated[Optional[str],  _last]  # None → auto-detected from yfinance sectorKey
+    year:          Annotated[Optional[int],  _last]  # None → all available years
+    model:         Annotated[str,            _last]  # LLM model name; defaults to "gpt-4.1-nano"
+    force_refresh: Annotated[Optional[bool], _last]  # True → wipe disk cache before download
 
     # ── Set by prepare_data_node — metadata ───────────────────────────────
     cache_key:       Annotated[str, _last]    # e.g. "AAPL_2023" or "AAPL_all"

@@ -17,6 +17,7 @@ agents/.cache/
 Public API
 ----------
 cache_key(ticker, year)              → str
+clear_cache(key)                     → None
 write_payloads(key, data)            → None
 read_payloads(key)                   → dict
 write_topic_result(key, topic, data) → None
@@ -32,8 +33,12 @@ Design invariants
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 # ─── Cache root: agents/.cache/ relative to this file ────────────────────────
 _CACHE_ROOT = os.path.join(os.path.dirname(__file__), ".cache")
@@ -56,6 +61,29 @@ def _cache_dir(key: str) -> str:
     path = os.path.join(_CACHE_ROOT, key)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def clear_cache(key: str) -> None:
+    """
+    Delete all cached files for a given cache key.
+
+    Removes the entire directory at ``_CACHE_ROOT/{key}/``, including
+    ``payloads.json`` and any ``{topic}.json`` files written by previous runs.
+    No-op if the directory does not exist.
+
+    Called by ``_download_and_evaluate`` when ``force_refresh=True`` so that
+    a full re-download replaces every stale artefact — not just payloads.
+
+    Parameters
+    ----------
+    key : Cache key, as returned by ``cache_key(ticker, year)``.
+    """
+    path = os.path.join(_CACHE_ROOT, key)
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+        _logger.info("[cache] cleared cache dir: %s", path)
+    else:
+        _logger.debug("[cache] clear_cache: directory not found, nothing to clear (%s)", path)
 
 
 def write_payloads(key: str, data: dict[str, Any]) -> None:

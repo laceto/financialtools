@@ -21,10 +21,10 @@ from financialtools.analysis import (
     _TOPIC_MAP,
     _build_regime_chain,
     _build_topic_chain,
-    _build_weights,
-    _filter_year,
     _invoke_chain,
-    _normalise_time,
+    build_weights,
+    filter_year,
+    normalise_time,
 )
 from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
@@ -113,7 +113,7 @@ def _stage_download_evaluate(ticker: str, sector: str) -> dict:
             f"Download returned no data for '{ticker}'. "
             "Check the ticker symbol and network connectivity."
         )
-    weights = _build_weights(sector)
+    weights = build_weights(sector)
     fta = FundamentalTraderAssistant(data=merged, weights=weights)
     return fta.evaluate()
 
@@ -128,8 +128,8 @@ def _build_payloads(evaluate_out: dict, year: int | None) -> dict:
     keys = ["metrics", "extended_metrics", "eval_metrics", "composite_scores", "red_flags"]
     payloads = {}
     for k in keys:
-        df = _normalise_time(evaluate_out[k])
-        df = _filter_year(df, year)
+        df = normalise_time(evaluate_out[k])
+        df = filter_year(df, year)
         payloads[k] = dataframe_to_json(df)
     return payloads
 

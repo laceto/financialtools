@@ -15,9 +15,9 @@
 | S1 — `_invoke_chain` retry logic bug | ✅ Fixed | `analysis.py:_invoke_chain` |
 | S2 — `evaluate()` swallows failures silently | ✅ Fixed | `processor.py:evaluate()` |
 | S3 — `merge_results` crashes on None results | ✅ Fixed | `wrappers.py:233` |
-| S4 — `from_ticker()` swallows all exceptions | ⬜ Open | `processor.py:112` |
-| S5 — Private helpers imported cross-package | ⬜ Open | `data_tools.py:38` |
-| S6 — No cache invalidation | ⬜ Open | `_cache.py` |
+| S4 — `from_ticker()` swallows all exceptions | ✅ Fixed | `processor.py:from_ticker` |
+| S5 — Private helpers imported cross-package | ✅ Fixed | `analysis.py:build_weights` |
+| S6 — No cache invalidation | ✅ Fixed | `_cache.py:clear_cache` |
 | M1–M10 | ⬜ Open | various |
 
 ---
@@ -65,29 +65,26 @@ Overall the codebase is well-structured at the macro level — the 3-stage pipel
 **Owner:** Performance & Reliability
 **Resolution:** Two changes: (1) `evaluate_multiple` now stores `_empty_result()` instead of `None` on parallel failure, and `print()` replaced with `logger.error(..., exc_info=True)`; (2) `merge_results` list comprehension rewritten to guard with `isinstance(result, dict)` and `isinstance(df, pd.DataFrame)` before calling `.empty` — eliminates the `AttributeError` on any non-dict entry that might slip through in future.
 
-### S4 — `Downloader.from_ticker()` swallows exceptions and returns a silent empty object
-**File:** `financialtools/processor.py:112–114`
+### ✅ S4 — `Downloader.from_ticker()` swallows exceptions and returns a silent empty object
+**File:** `financialtools/processor.py:from_ticker`
 **Owner:** Performance & Reliability
+**Resolution:** The `except Exception` block that returned `cls(ticker)` — an empty `Downloader` with all `None` internals — now raises `DownloadError(f"[{ticker}] download failed: {e}") from e` instead. `DownloadError` was added to the import from `financialtools.exceptions`. Docstring updated with explicit `Raises` section explaining the old silent-failure behaviour and why it was dangerous. `data_tools.py` docstrings updated to reflect that `DownloadError` is the primary download failure signal; `prepare_financial_data` already catches it via the broad `except Exception` handler — no logic change needed there.
 
-Any exception from yfinance returns `cls(ticker)` — a valid-looking object with `None` internals. The caller cannot distinguish a failed download from an empty ticker.
-
-**Fix:** Raise `DownloadError` for unrecoverable failures (non-retryable exceptions). Return empty `Downloader` only for known "no data" cases.
-
-### S5 — `agents/data_tools.py` imports private helpers from `financialtools.analysis`
+### ✅ S5 — `agents/data_tools.py` imports private helpers from `financialtools.analysis`
 **File:** `agents/_tools/data_tools.py:38–42`
 **Owner:** Architecture & Code Quality
+**Resolution:** `_build_weights`, `_filter_year`, `_normalise_time` renamed to `build_weights`, `filter_year`, `normalise_time` in `analysis.py` (definitions + all internal call-sites). Section header comment updated from "Internal helpers" to "Public helpers". All call-sites updated across `agents/_tools/data_tools.py`, `app.py`, and `scripts/run_pipeline.py`. `run_pipeline.py` had a duplicate local `_build_weights` implementation — the duplicate was removed and replaced with the canonical import from `financialtools.analysis`. `wrappers.py` docstring reference updated. All three helpers (plus `run_topic_analysis`) added to `financialtools/__init__.py` which now establishes a real public API contract.
 
-`_build_weights`, `_filter_year`, `_normalise_time` have `_` prefix (private convention) but are imported cross-package. Renaming them internally breaks the agent silently.
-
-**Fix:** Promote these three helpers to public API (drop `_` prefix) and add them to `__init__.py` exports.
-
-### S6 — No cache invalidation in `agents/_cache.py`
+### ✅ S6 — No cache invalidation in `agents/_cache.py`
 **File:** `agents/_cache.py`
 **Owner:** Performance & Reliability
+**Resolution:** Four-site change:
+1. **`_cache.py`** — added `clear_cache(key)` to the public API. Uses `shutil.rmtree` to delete the entire `_CACHE_ROOT/{key}/` directory (payloads.json + all `{topic}.json` files from prior runs). No-op if the directory doesn't exist. Added `import shutil`, `import logging`, and module-level `_logger`.
+2. **`data_tools._download_and_evaluate`** — added `force_refresh: bool = False` parameter. When `True`, calls `clear_cache(cache_key(ticker, year))` before Stage 1 download, ensuring the directory is fully wiped before new data lands. Log line updated to include `force_refresh=` flag.
+3. **`data_tools.prepare_financial_data`** — `force_refresh` threaded through the `@tool` signature so the LLM-facing surface and CLI callers can request a refresh explicitly.
+4. **`graph_state.AnalysisState`** + **`graph_nodes.prepare_data_node`** — `force_refresh: Annotated[Optional[bool], _last]` added to `AnalysisState` as a caller-supplied input; `prepare_data_node` reads it and passes `bool(state.get("force_refresh", False))` to `_download_and_evaluate`.
 
-Cache key is `"{ticker}_{year}"` with no TTL or fingerprint. Stale cached payloads are silently reused on every subsequent run. In development this means financial data never refreshes after the first run.
-
-**Fix:** Add a `force_refresh: bool = False` parameter to `_download_and_evaluate` that deletes the cache directory before writing.
+Usage: `agent.invoke({"ticker": "AAPL", "year": 2023, "force_refresh": True}, config=config)`
 
 ---
 
@@ -171,9 +168,9 @@ if not os.getenv("OPENAI_API_KEY"):
 | P1 | S1 — _invoke_chain retry logic bug (3 calls) | ✅ Fixed | Devil's Advocate | `analysis.py:326` |
 | P1 | S2 — evaluate() swallows failures silently | ✅ Fixed | Devil's Advocate | `processor.py:evaluate()` |
 | P1 | S3 — merge_results crashes on None results | ✅ Fixed | Performance | `wrappers.py:233` |
-| P1 | S4 — from_ticker() swallows all exceptions | ⬜ Open | Performance | `processor.py:112` |
-| P1 | S5 — private helpers imported cross-package | ⬜ Open | Architecture | `data_tools.py:38` |
-| P1 | S6 — no cache invalidation | ⬜ Open | Performance | `_cache.py` |
+| P1 | S4 — from_ticker() swallows all exceptions | ✅ Fixed | Performance | `processor.py:from_ticker` |
+| P1 | S5 — private helpers imported cross-package | ✅ Fixed | Architecture | `analysis.py:build_weights` |
+| P1 | S6 — no cache invalidation | ✅ Fixed | Performance | `_cache.py:clear_cache` |
 | P2 | M1 — dead weight dicts in config.py | ⬜ Open | Architecture | `config.py:30` |
 | P2 | M2 — chains.py has no deprecation marker | ⬜ Open | Devil's Advocate | `chains.py` |
 | P2 | M3 — __init__.py exports nothing | ⬜ Open | API & DX | `__init__.py` |

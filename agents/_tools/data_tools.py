@@ -33,13 +33,13 @@ import re
 import pandas as pd
 from langchain_core.tools import tool
 
-from agents._cache import cache_key, write_payloads
+from agents._cache import cache_key, clear_cache, write_payloads
 from financialtools.analysis import (
-    _build_weights,
-    _filter_year,
-    _normalise_time,
+    build_weights,
+    filter_year,
+    normalise_time,
 )
-from financialtools.exceptions import EvaluationError
+from financialtools.exceptions import DownloadError, EvaluationError
 from financialtools.processor import Downloader, FundamentalTraderAssistant
 from financialtools.utils import dataframe_to_json
 
@@ -54,6 +54,7 @@ def _download_and_evaluate(
     ticker: str,
     sector: str | None = None,
     year: int | None = None,
+    force_refresh: bool = False,
 ) -> dict:
     """
     Download and evaluate financial data for a ticker.
@@ -68,11 +69,17 @@ def _download_and_evaluate(
 
     Parameters
     ----------
-    ticker : Ticker symbol, e.g. "AAPL" or "ENI.MI".
-    sector : Sector key matching sec_sector_metric_weights (e.g. "technology").
-             Auto-detected from yfinance sectorKey if None.
-             Falls back to "Default" with a warning when detection fails.
-    year   : Filter to a single fiscal year. None = all available periods.
+    ticker        : Ticker symbol, e.g. "AAPL" or "ENI.MI".
+    sector        : Sector key matching sec_sector_metric_weights (e.g. "technology").
+                    Auto-detected from yfinance sectorKey if None.
+                    Falls back to "Default" with a warning when detection fails.
+    year          : Filter to a single fiscal year. None = all available periods.
+    force_refresh : When True, delete the existing cache directory for this
+                    ticker/year before writing new data.  Clears both
+                    ``payloads.json`` and any stale ``{topic}.json`` files from
+                    prior runs so consumers always see fresh artefacts.
+                    Default False — cache is overwritten in place (payloads.json
+                    replaced; old topic results remain until topics are re-run).
 
     Returns
     -------
@@ -83,17 +90,26 @@ def _download_and_evaluate(
 
     Raises
     ------
-    ValueError       — empty download result.
+    DownloadError    — yfinance raised during data retrieval or reshaping.
+    ValueError       — from_ticker() succeeded but get_merged_data() is empty.
     EvaluationError  — bad weights or evaluation failure.
     Any other exception propagates unchanged.
 
     Failure modes
     -------------
-    - Empty merged DataFrame → ValueError (bad ticker or network).
+    - yfinance error during download → DownloadError (bad ticker or network).
+    - Empty merged DataFrame post-download → ValueError (ticker exists but no data).
     - FundamentalTraderAssistant raises EvaluationError → propagates.
     """
-    _logger.info("[_download_and_evaluate] ticker=%s sector=%s year=%s",
-                 ticker, sector, year)
+    _logger.info("[_download_and_evaluate] ticker=%s sector=%s year=%s force_refresh=%s",
+                 ticker, sector, year, force_refresh)
+
+    # ── Pre-stage: cache invalidation (optional) ─────────────────────────────
+    if force_refresh:
+        key_to_clear = cache_key(ticker, year)
+        _logger.info("[_download_and_evaluate] force_refresh=True — clearing cache key=%s",
+                     key_to_clear)
+        clear_cache(key_to_clear)
 
     # ── Stage 1: Download ────────────────────────────────────────────────────
     d = Downloader.from_ticker(ticker)
@@ -125,13 +141,13 @@ def _download_and_evaluate(
             _logger.warning("[_download_and_evaluate] sector not found in info; using 'default'")
 
     # ── Stage 2: Evaluate ────────────────────────────────────────────────────
-    weights = _build_weights(sector)
+    weights = build_weights(sector)
     fta = FundamentalTraderAssistant(data=merged, weights=weights)
     evaluate_out = fta.evaluate()
 
     # ── Stage 3: Normalise + filter ──────────────────────────────────────────
     def _prep(df: pd.DataFrame) -> str:
-        return dataframe_to_json(_filter_year(_normalise_time(df), year))
+        return dataframe_to_json(filter_year(normalise_time(df), year))
 
     metrics_json          = _prep(evaluate_out["metrics"])
     extended_metrics_json = _prep(evaluate_out["extended_metrics"])
@@ -175,7 +191,12 @@ def _download_and_evaluate(
 # ---------------------------------------------------------------------------
 
 @tool
-def prepare_financial_data(ticker: str, sector: str | None = None, year: int | None = None) -> str:
+def prepare_financial_data(
+    ticker: str,
+    sector: str | None = None,
+    year: int | None = None,
+    force_refresh: bool = False,
+) -> str:
     """
     Download and evaluate financial data for a ticker, then cache the results.
 
@@ -184,13 +205,17 @@ def prepare_financial_data(ticker: str, sector: str | None = None, year: int | N
     passed to topic subgraphs via AnalysisState, not via this tool's output.
 
     Args:
-        ticker: Ticker symbol (e.g. "AAPL", "ENI.MI").
-        sector: Sector name matching a key in config.sec_sector_metric_weights,
-                e.g. "technology", "energy", "financial-services".
-                If omitted, the sector is auto-detected from yfinance info
-                (lowercased, spaces replaced with dashes).
-                Falls back to "default" with a warning if detection fails.
-        year:   Optional year filter. None = all available years.
+        ticker:        Ticker symbol (e.g. "AAPL", "ENI.MI").
+        sector:        Sector name matching a key in config.sec_sector_metric_weights,
+                       e.g. "technology", "energy", "financial-services".
+                       If omitted, the sector is auto-detected from yfinance info
+                       (lowercased, spaces replaced with dashes).
+                       Falls back to "default" with a warning if detection fails.
+        year:          Optional year filter. None = all available years.
+        force_refresh: When True, wipe the existing cache for this ticker/year
+                       before writing new data.  Use this to guarantee fresh
+                       financial data on re-runs; otherwise stale topic results
+                       from a previous session may persist on disk.
 
     Returns:
         JSON object:
@@ -201,14 +226,15 @@ def prepare_financial_data(ticker: str, sector: str | None = None, year: int | N
 
     Failure modes
     -------------
-    - ValueError      : empty download result (check ticker/network)
+    - DownloadError   : yfinance error during retrieval (check ticker/network)
+    - ValueError      : download succeeded but merged data is empty
     - EvaluationError : bad weights (check sector key)
     - Any other exception is caught and returned as {"error": ...}
     """
-    _logger.info("[prepare_financial_data] ticker=%s sector=%s year=%s",
-                 ticker, sector, year)
+    _logger.info("[prepare_financial_data] ticker=%s sector=%s year=%s force_refresh=%s",
+                 ticker, sector, year, force_refresh)
     try:
-        result = _download_and_evaluate(ticker, sector, year)
+        result = _download_and_evaluate(ticker, sector, year, force_refresh=force_refresh)
         # Return metadata only — payloads are passed to subgraphs via state.
         return json.dumps({
             "cache_key":    result["cache_key"],

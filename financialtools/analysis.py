@@ -198,10 +198,10 @@ class TopicAnalysisResult:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Public helpers (promoted from private in S5 fix — see code-review-report.md)
 # ---------------------------------------------------------------------------
 
-def _build_weights(sector: str) -> pd.DataFrame:
+def build_weights(sector: str) -> pd.DataFrame:
     """
     Build a weights DataFrame for the given sector.
 
@@ -231,7 +231,7 @@ def _build_weights(sector: str) -> pd.DataFrame:
     })
 
 
-def _normalise_time(df: pd.DataFrame) -> pd.DataFrame:
+def normalise_time(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert the 'time' column to integer years.
 
@@ -246,7 +246,7 @@ def _normalise_time(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _filter_year(df: pd.DataFrame, year: Optional[int]) -> pd.DataFrame:
+def filter_year(df: pd.DataFrame, year: Optional[int]) -> pd.DataFrame:
     """Return rows matching year, or the full DataFrame if year is None."""
     if year is None or df.empty or "time" not in df.columns:
         return df
@@ -434,7 +434,7 @@ def run_topic_analysis(
     # Stage 2: Evaluate
     # ------------------------------------------------------------------
     _logger.info("[%s] Building weights for sector '%s' …", ticker, sector)
-    weights = _build_weights(sector)
+    weights = build_weights(sector)
 
     _logger.info("[%s] Running FundamentalTraderAssistant.evaluate() …", ticker)
     fta = FundamentalTraderAssistant(data=merged, weights=weights)
@@ -451,11 +451,11 @@ def run_topic_analysis(
     red_flags_df        = evaluate_out["red_flags"]
 
     # Normalise time → integer year, then filter if year is specified
-    metrics_df          = _filter_year(_normalise_time(metrics_df),          year)
-    extended_metrics_df = _filter_year(_normalise_time(extended_metrics_df), year)
-    eval_metrics_df     = _filter_year(_normalise_time(eval_metrics_df),     year)
-    composite_scores_df = _filter_year(_normalise_time(composite_scores_df), year)
-    red_flags_df        = _filter_year(_normalise_time(red_flags_df),        year)
+    metrics_df          = filter_year(normalise_time(metrics_df),          year)
+    extended_metrics_df = filter_year(normalise_time(extended_metrics_df), year)
+    eval_metrics_df     = filter_year(normalise_time(eval_metrics_df),     year)
+    composite_scores_df = filter_year(normalise_time(composite_scores_df), year)
+    red_flags_df        = filter_year(normalise_time(red_flags_df),        year)
 
     metrics_json          = dataframe_to_json(metrics_df)
     extended_metrics_json = dataframe_to_json(extended_metrics_df)

@@ -182,7 +182,7 @@ class FundamentalEvaluator:
             df (pd.DataFrame): Full DataFrame with all tickers' data.
             weights (pd.DataFrame): Sector weights DataFrame with columns
                 ``sector``, ``metrics``, ``weights`` — as returned by
-                ``financialtools.analysis._build_weights(sector)``.
+                ``financialtools.analysis.build_weights(sector)``.
 
                 The previous type hint was ``dict``, which caused a runtime
                 ``AttributeError`` because ``FundamentalTraderAssistant``

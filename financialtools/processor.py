@@ -3,7 +3,7 @@ import os
 import pandas as pd
 from time import sleep
 from typing import Dict, Any, List
-from financialtools.exceptions import EvaluationError
+from financialtools.exceptions import DownloadError, EvaluationError
 import numpy as np
 import logging as _logging
 
@@ -87,7 +87,28 @@ class Downloader:
 
     @classmethod
     def from_ticker(cls, ticker):
-        """Download and reshape all financial data for one ticker."""
+        """Download and reshape all financial data for one ticker.
+
+        Returns
+        -------
+        Downloader
+            Fully populated instance with ``_balance_sheet``, ``_income_stmt``,
+            ``_cashflow``, and ``_info`` set.
+
+        Raises
+        ------
+        DownloadError
+            If yfinance raises any exception during data retrieval or reshaping.
+            Callers that need a soft-failure path should catch ``DownloadError``
+            explicitly — do **not** rely on an empty ``Downloader`` being returned.
+
+        Note
+        ----
+        This method never returns a ``Downloader`` with ``None`` internals.
+        Previously it returned ``cls(ticker)`` on failure (S4 fix), which was
+        indistinguishable from a valid empty-data ticker and caused silent
+        downstream errors in ``get_merged_data()`` and metric computation.
+        """
         import yfinance as yf
 
         try:
@@ -106,19 +127,18 @@ class Downloader:
             )
 
             df_info = pd.DataFrame(list(t.info.items()), columns=["key", "value"])
-            # df_info = df_info[df_info["key"].str.contains("marketCap|beta|industry|industryDisp|industryKey|longBusinessSummary|longName|sector|sectorDisp|sectorKey|website", 
+            # df_info = df_info[df_info["key"].str.contains("marketCap|beta|industry|industryDisp|industryKey|longBusinessSummary|longName|sector|sectorDisp|sectorKey|website",
             #                                case=True, na=False)]
             df_info.insert(0, "ticker", ticker)
             df_info = df_info.pivot(index=["ticker"], columns='key', values='value').reset_index()
             # df_info = df_info.pivot(index=["ticker"], columns='key', values='value')
             d._info = df_info
 
-
             return d
 
         except Exception as e:
             _logger.error(f"[{ticker}] from_ticker failed: {e}", exc_info=True)
-            return cls(ticker)
+            raise DownloadError(f"[{ticker}] download failed: {e}") from e
             
     # @staticmethod
     # def __format_fin_data(ticker: str, data_type: str, df: pd.DataFrame) -> pd.DataFrame:
