@@ -327,27 +327,37 @@ def _invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
     """
     Invoke a chain with one-shot output-fixing retry.
 
-    Primary call: prompt | llm | parser
-    On parse error: ask the LLM to fix the malformed JSON, then parse again.
-    Returns None (with a WARNING log) if the retry also fails.
+    Call budget
+    -----------
+    - Happy path  : 1 LLM call  (primary)
+    - Parse error : 2 LLM calls (primary + fix)
+
+    Primary call: prompt | llm → parser
+    On parse error: feed the *original* broken output to _FIX_PROMPT | llm,
+    then parse the corrected response.
+    Returns None (with a WARNING log) if the fix retry also fails.
 
     This replaces OutputFixingParser which was removed in LangChain 1.0.
+
+    Invariant: the fix prompt receives the output from the *primary* call,
+    not a second fresh invocation.  Re-calling the LLM before fixing would
+    discard the broken output and waste a third call.
     """
     raw_chain = prompt | llm
+    raw = raw_chain.invoke(inputs)          # call 1 — always made
     try:
-        raw = raw_chain.invoke(inputs)
         return parser.invoke(raw)
     except Exception as primary_exc:
+        broken_content = raw.content if hasattr(raw, "content") else str(raw)
         _logger.debug(
             "[%s] '%s' primary parse failed (%s) — attempting fix retry",
             ticker, topic, primary_exc,
         )
         try:
-            raw = raw_chain.invoke(inputs)
             fix_chain = _FIX_PROMPT | llm
-            fixed_raw = fix_chain.invoke({
+            fixed_raw = fix_chain.invoke({  # call 2 — fix only, no re-invoke
                 "format_instructions": parser.get_format_instructions(),
-                "broken": raw.content if hasattr(raw, "content") else str(raw),
+                "broken": broken_content,
             })
             return parser.invoke(fixed_raw)
         except Exception as retry_exc:

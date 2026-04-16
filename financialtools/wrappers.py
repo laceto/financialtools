@@ -174,13 +174,20 @@ class FundamentalEvaluator:
     for single or multiple tickers.
     """
 
-    def __init__(self, df: pd.DataFrame, weights: dict):
+    def __init__(self, df: pd.DataFrame, weights: pd.DataFrame):
         """
         Initialize the evaluator.
 
         Parameters:
             df (pd.DataFrame): Full DataFrame with all tickers' data.
-            weights (dict): Grouped weights for evaluation.
+            weights (pd.DataFrame): Sector weights DataFrame with columns
+                ``sector``, ``metrics``, ``weights`` — as returned by
+                ``financialtools.analysis._build_weights(sector)``.
+
+                The previous type hint was ``dict``, which caused a runtime
+                ``AttributeError`` because ``FundamentalTraderAssistant``
+                calls ``weights['sector'].dropna()`` — a DataFrame method
+                that plain dicts do not have.
         """
         self.df = df
         self.weights = weights
@@ -232,8 +239,13 @@ class FundamentalEvaluator:
                     try:
                         results[ticker] = future.result()
                     except Exception as e:
-                        print(f"Parallel evaluation failed for {ticker}: {e}")
-                        results[ticker] = None
+                        # Use _empty_result() — not None — so that merge_results()
+                        # can safely call result.get(key) on every entry without
+                        # a NoneType AttributeError.
+                        logger.error(
+                            "[%s] Parallel evaluation failed: %s", ticker, e, exc_info=True
+                        )
+                        results[ticker] = _empty_result()
         else:
             for ticker in tickers:
                 results[ticker] = self.evaluate_single(ticker)
@@ -251,12 +263,19 @@ def merge_results(results: dict, key: str) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: Concatenated DataFrame for the specified key
+
+    Design note:
+        Each value in results must be a dict (as returned by evaluate_single /
+        _empty_result) — never None. The isinstance guard below is a defensive
+        last-resort check; evaluate_multiple guarantees this contract after S3 fix.
     """
     try:
         frames = [
-            result.get(key)
+            df
             for result in results.values()
-            if result is not None and not result.get(key).empty
+            if isinstance(result, dict)
+            for df in (result.get(key),)
+            if isinstance(df, pd.DataFrame) and not df.empty
         ]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     except Exception as e:

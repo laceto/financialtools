@@ -41,12 +41,16 @@ class RateLimiter:
         Block until a call is permissible under all three rate limits.
 
         Uses sliding-window checks. Refreshes timestamps after each sleep so
-        stale-now values do not cause limit overruns. All state access is
-        protected by self._lock.
+        stale-now values do not cause limit overruns.
+
+        Invariant: self._lock is held only while reading/writing self.calls,
+        never during sleep(). Holding the lock across sleep() would serialise
+        all threads — they would queue on the lock rather than on the rate
+        window, defeating the purpose of the limiter entirely.
         """
         import time
-        with self._lock:
-            while True:
+        while True:
+            with self._lock:
                 now = time.time()
                 # Prune calls older than 24 h to bound list growth.
                 self.calls = [t for t in self.calls if now - t < 86400]
@@ -63,11 +67,14 @@ class RateLimiter:
                     wait = max(wait, 86400 - (now - self.calls[0]))
 
                 if wait <= 0.0:
-                    break  # all limits satisfied — proceed
-                sleep(max(0.0, wait))
-                # Re-enter loop to recompute with fresh timestamps after sleep.
+                    # All windows have a free slot — record the call and return.
+                    self.calls.append(time.time())
+                    return
 
-            self.calls.append(time.time())
+            # Lock released before sleeping so other threads can check their
+            # own windows concurrently. Re-enter loop to recompute with fresh
+            # timestamps after waking.
+            sleep(max(0.0, wait))
 
 
 class Downloader:
@@ -847,14 +854,30 @@ class FundamentalTraderAssistant:
         """
         Evaluate financial metrics, compute scores, detect red flags, and return a summary.
 
-        Returns:
-        - dict with keys matching _EMPTY_RESULT_KEYS:
+        Returns
+        -------
+        dict with keys matching _EMPTY_RESULT_KEYS:
             "metrics": pd.DataFrame,
             "eval_metrics": pd.DataFrame,
             "composite_scores": pd.DataFrame,
             "raw_red_flags": pd.DataFrame,
             "red_flags": pd.DataFrame,
             "extended_metrics": pd.DataFrame
+
+        Raises
+        ------
+        EvaluationError
+            On any unrecoverable failure (empty metrics, unexpected exception).
+            Callers that need a soft result should catch EvaluationError explicitly
+            and call _empty_result() themselves — this method never silently returns
+            empty DataFrames on failure.
+
+        Design note
+        -----------
+        The previous implementation caught all exceptions and returned _empty_result().
+        That made it impossible for callers to distinguish a failure from a legitimate
+        empty result, causing the LLM pipeline to receive "[]" payloads and produce
+        hallucinated assessments. Raising on failure forces callers to be explicit.
         """
         try:
             # Step 1: Compute metrics
@@ -864,11 +887,10 @@ class FundamentalTraderAssistant:
             # Without this check the melt() below crashes with a misleading
             # KeyError (ticker/time absent) that obscures the real root cause.
             if m.empty:
-                _logger.error(
-                    "[%s] compute_metrics() returned empty — evaluate() aborted.",
-                    self.ticker,
+                raise EvaluationError(
+                    f"[{self.ticker}] compute_metrics() returned empty — "
+                    "check logs for the underlying error."
                 )
-                return _empty_result()
 
             ev = self.compute_valuation_metrics()
 
@@ -920,6 +942,13 @@ class FundamentalTraderAssistant:
                 "extended_metrics": ext,
             }
 
+        except EvaluationError:
+            raise  # already has context — don't wrap again
         except Exception as e:
-            _logger.error(f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}", exc_info=True)
-            return _empty_result()
+            _logger.error(
+                "[%s] evaluate() failed unexpectedly: %s",
+                getattr(self, "ticker", "?"), e, exc_info=True,
+            )
+            raise EvaluationError(
+                f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}"
+            ) from e
