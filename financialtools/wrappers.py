@@ -5,7 +5,8 @@ import polars as pl
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from financialtools.utils import export_to_xlsx
-from financialtools.processor import Downloader, FundamentalTraderAssistant, _empty_result
+from financialtools.processor import Downloader, FundamentalMetricsEvaluator, _empty_result
+from financialtools.exceptions import DownloadError
 
 
 import logging
@@ -62,6 +63,13 @@ def _configure_logging() -> None:
 
 
 class DownloaderWrapper:
+    """Static namespace for download helpers — do not instantiate.
+
+    All methods are ``@staticmethod``; there is no instance state.
+    Use ``DownloaderWrapper.download_data(tickers)`` directly.
+    """
+
+    __slots__ = ()
 
     @staticmethod
     def _preprocess_df(df):
@@ -189,28 +197,40 @@ class DownloaderWrapper:
         return pd.concat(fin_data, ignore_index=True)
 
     @staticmethod
-    def download_data(tickers: str | list[str]) -> pd.DataFrame | None:
-        """
-        Public wrapper: Download data for one or multiple tickers.
+    def download_data(tickers: str | list[str]) -> pd.DataFrame:
+        """Download data for one or multiple tickers.
 
         Parameters
         ----------
         tickers : str or list[str]
-            - If str: download data for a single ticker
-            - If list[str]: download and merge data for all tickers
 
         Returns
         -------
-        pd.DataFrame or None
-            - DataFrame with ticker data if successful
-            - None if all downloads fail
+        pd.DataFrame
+            All downloaded rows concatenated.
+
+        Raises
+        ------
+        DownloadError
+            If all downloads fail (single ticker or every ticker in the list).
+            Consistent with ``Downloader.from_ticker()`` which also raises on failure.
+        TypeError
+            If ``tickers`` is not a str or list[str].
         """
         if isinstance(tickers, str):
-            return DownloaderWrapper._download_single_ticker(tickers)
+            result = DownloaderWrapper._download_single_ticker(tickers)
         elif isinstance(tickers, list):
-            return DownloaderWrapper._download_multiple_tickers(tickers)
+            result = DownloaderWrapper._download_multiple_tickers(tickers)
         else:
             raise TypeError("tickers must be a str or list of str")
+
+        if result is None:
+            label = tickers if isinstance(tickers, str) else f"{len(tickers)} tickers"
+            raise DownloadError(
+                f"download_data({label!r}) failed — all downloads returned no data. "
+                "Check logs for per-ticker errors."
+            )
+        return result
         
 
 
@@ -219,27 +239,41 @@ class DownloaderWrapper:
 
 class FundamentalEvaluator:
     """
-    Wrapper around FundamentalTraderAssistant to evaluate fundamentals
+    Wrapper around FundamentalMetricsEvaluator to evaluate fundamentals
     for single or multiple tickers.
     """
 
-    def __init__(self, df: pd.DataFrame, weights: pd.DataFrame):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        weights: pd.DataFrame | None = None,
+        sector: str | None = None,
+    ):
         """
         Initialize the evaluator.
 
-        Parameters:
-            df (pd.DataFrame): Full DataFrame with all tickers' data.
-            weights (pd.DataFrame): Sector weights DataFrame with columns
-                ``sector``, ``metrics``, ``weights`` — as returned by
-                ``financialtools.analysis.build_weights(sector)``.
+        Exactly one of ``weights`` or ``sector`` must be provided.
 
-                The previous type hint was ``dict``, which caused a runtime
-                ``AttributeError`` because ``FundamentalTraderAssistant``
-                calls ``weights['sector'].dropna()`` — a DataFrame method
-                that plain dicts do not have.
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Full DataFrame with all tickers' data.
+        weights : pd.DataFrame, optional
+            Sector weights with columns ``sector``, ``metrics``, ``weights``
+            — as returned by ``build_weights()``. Use this for custom weights.
+        sector : str, optional
+            yfinance sectorKey (e.g. ``"technology"``). When supplied,
+            ``build_weights(sector)`` is called internally — no need to import
+            or call it separately. See ``list_sectors()`` for valid values.
         """
+        if weights is None and sector is None:
+            raise ValueError("Provide either 'weights' (DataFrame) or 'sector' (str).")
+        if weights is not None and sector is not None:
+            raise ValueError("Provide only one of 'weights' or 'sector', not both.")
+
+        from financialtools.analysis import build_weights as _build_weights
         self.df = df
-        self.weights = weights
+        self.weights = weights if weights is not None else _build_weights(sector)
 
     def evaluate_single(self, ticker: str) -> dict:
         """
@@ -256,7 +290,7 @@ class FundamentalEvaluator:
             if processed_df.empty:
                 raise ValueError("Processed DataFrame is empty.")
 
-            assistant = FundamentalTraderAssistant(
+            assistant = FundamentalMetricsEvaluator(
                 data=processed_df, weights=self.weights
             )
             return assistant.evaluate()

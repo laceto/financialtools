@@ -128,7 +128,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("FAKE", result["error"])
 
-    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.FundamentalMetricsEvaluator")
     @patch("agents._tools.data_tools.Downloader")
     def test_evaluation_error_returns_error(self, MockDownloader, MockFTA):
         """EvaluationError from FTA must be returned as an error envelope."""
@@ -145,7 +145,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         self.assertIn("EvaluationError", result["error"])
 
     @patch("agents._tools.data_tools.write_payloads")
-    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.FundamentalMetricsEvaluator")
     @patch("agents._tools.data_tools.Downloader")
     def test_happy_path_returns_cache_key(self, MockDownloader, MockFTA, mock_write):
         """A successful call must return cache_key and status=ready."""
@@ -172,7 +172,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         mock_write.assert_called_once()
 
     @patch("agents._tools.data_tools.write_payloads")
-    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.FundamentalMetricsEvaluator")
     @patch("agents._tools.data_tools.Downloader")
     def test_sector_auto_detected_from_info(self, MockDownloader, MockFTA, mock_write):
         """When sector=None, sector is read from get_info_data()['sector']."""
@@ -198,7 +198,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         self.assertEqual(result["sector"], "technology-services")
 
     @patch("agents._tools.data_tools.write_payloads")
-    @patch("agents._tools.data_tools.FundamentalTraderAssistant")
+    @patch("agents._tools.data_tools.FundamentalMetricsEvaluator")
     @patch("agents._tools.data_tools.Downloader")
     def test_sector_falls_back_to_default_when_info_missing(self, MockDownloader, MockFTA, mock_write):
         """When sector=None and info has no 'sector' column, sector defaults to 'Default'."""

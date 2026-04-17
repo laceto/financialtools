@@ -182,7 +182,7 @@ def evaluate_sector(
     {ticker: evaluate_result_dict}
         Tickers with empty DataFrames get _empty_result() directly.
     """
-    from financialtools.processor import FundamentalTraderAssistant
+    from financialtools.processor import FundamentalMetricsEvaluator
     from financialtools.exceptions import EvaluationError
 
     weights = build_weights(sector)
@@ -193,7 +193,7 @@ def evaluate_sector(
             results[ticker] = _empty_result()
             continue
         try:
-            assistant = FundamentalTraderAssistant(data=df, weights=weights)
+            assistant = FundamentalMetricsEvaluator(data=df, weights=weights)
             results[ticker] = assistant.evaluate()
         except EvaluationError as exc:
             logger.error(f"  {ticker}: EvaluationError — {exc}")

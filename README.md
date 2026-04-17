@@ -19,7 +19,7 @@ from financialtools.wrappers import DownloaderWrapper, FundamentalEvaluator
 from financialtools.analysis import run_topic_analysis
 
 # 1 — Self-contained: download + evaluate + 8 LLM chains in one call
-result = run_topic_analysis("AAPL", sector="Technology", year=2023)
+result = run_topic_analysis("AAPL", sector="technology", year=2023)
 print(result.regime.regime)        # "bull" | "bear"
 print(result.liquidity.rating)     # "strong" | "adequate" | "weak"
 print(result.red_flags.severity)   # "none" | "low" | "moderate" | "high"
@@ -126,7 +126,7 @@ from chains import get_stock_evaluation_report
 
 report = get_stock_evaluation_report(
     "AAPL",
-    sector="Technology",       # required — caller supplies the sector
+    sector="technology",       # required — yfinance sectorKey convention (lowercase)
     year=2023,                 # optional
     base_dir="financial_data", # directory containing *.xlsx outputs
 )
