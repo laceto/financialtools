@@ -48,6 +48,7 @@ Debugging
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -198,10 +199,10 @@ class TopicAnalysisResult:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Public helpers (promoted from private in S5 fix — see code-review-report.md)
 # ---------------------------------------------------------------------------
 
-def _build_weights(sector: str) -> pd.DataFrame:
+def build_weights(sector: str) -> pd.DataFrame:
     """
     Build a weights DataFrame for the given sector.
 
@@ -231,7 +232,7 @@ def _build_weights(sector: str) -> pd.DataFrame:
     })
 
 
-def _normalise_time(df: pd.DataFrame) -> pd.DataFrame:
+def normalise_time(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert the 'time' column to integer years.
 
@@ -246,7 +247,7 @@ def _normalise_time(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _filter_year(df: pd.DataFrame, year: Optional[int]) -> pd.DataFrame:
+def filter_year(df: pd.DataFrame, year: Optional[int]) -> pd.DataFrame:
     """Return rows matching year, or the full DataFrame if year is None."""
     if year is None or df.empty or "time" not in df.columns:
         return df
@@ -327,27 +328,37 @@ def _invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
     """
     Invoke a chain with one-shot output-fixing retry.
 
-    Primary call: prompt | llm | parser
-    On parse error: ask the LLM to fix the malformed JSON, then parse again.
-    Returns None (with a WARNING log) if the retry also fails.
+    Call budget
+    -----------
+    - Happy path  : 1 LLM call  (primary)
+    - Parse error : 2 LLM calls (primary + fix)
+
+    Primary call: prompt | llm → parser
+    On parse error: feed the *original* broken output to _FIX_PROMPT | llm,
+    then parse the corrected response.
+    Returns None (with a WARNING log) if the fix retry also fails.
 
     This replaces OutputFixingParser which was removed in LangChain 1.0.
+
+    Invariant: the fix prompt receives the output from the *primary* call,
+    not a second fresh invocation.  Re-calling the LLM before fixing would
+    discard the broken output and waste a third call.
     """
     raw_chain = prompt | llm
+    raw = raw_chain.invoke(inputs)          # call 1 — always made
     try:
-        raw = raw_chain.invoke(inputs)
         return parser.invoke(raw)
     except Exception as primary_exc:
+        broken_content = raw.content if hasattr(raw, "content") else str(raw)
         _logger.debug(
             "[%s] '%s' primary parse failed (%s) — attempting fix retry",
             ticker, topic, primary_exc,
         )
         try:
-            raw = raw_chain.invoke(inputs)
             fix_chain = _FIX_PROMPT | llm
-            fixed_raw = fix_chain.invoke({
+            fixed_raw = fix_chain.invoke({  # call 2 — fix only, no re-invoke
                 "format_instructions": parser.get_format_instructions(),
-                "broken": raw.content if hasattr(raw, "content") else str(raw),
+                "broken": broken_content,
             })
             return parser.invoke(fixed_raw)
         except Exception as retry_exc:
@@ -405,6 +416,13 @@ def run_topic_analysis(
     - LangSmith tracing is enabled automatically if LANGSMITH_API_KEY is set.
     - All LLM calls use temperature=0 for deterministic output.
     """
+    # Fail fast before any network or LLM work if the key is missing.
+    if not os.getenv("OPENAI_API_KEY"):
+        raise EnvironmentError(
+            "OPENAI_API_KEY not set — add it to your .env file (OPENAI_API_KEY=sk-...).\n"
+            "run_topic_analysis() requires an OpenAI key to call the LLM chains."
+        )
+
     result = TopicAnalysisResult(ticker=ticker, sector=sector, year=year)
 
     # ------------------------------------------------------------------
@@ -424,7 +442,7 @@ def run_topic_analysis(
     # Stage 2: Evaluate
     # ------------------------------------------------------------------
     _logger.info("[%s] Building weights for sector '%s' …", ticker, sector)
-    weights = _build_weights(sector)
+    weights = build_weights(sector)
 
     _logger.info("[%s] Running FundamentalTraderAssistant.evaluate() …", ticker)
     fta = FundamentalTraderAssistant(data=merged, weights=weights)
@@ -441,11 +459,11 @@ def run_topic_analysis(
     red_flags_df        = evaluate_out["red_flags"]
 
     # Normalise time → integer year, then filter if year is specified
-    metrics_df          = _filter_year(_normalise_time(metrics_df),          year)
-    extended_metrics_df = _filter_year(_normalise_time(extended_metrics_df), year)
-    eval_metrics_df     = _filter_year(_normalise_time(eval_metrics_df),     year)
-    composite_scores_df = _filter_year(_normalise_time(composite_scores_df), year)
-    red_flags_df        = _filter_year(_normalise_time(red_flags_df),        year)
+    metrics_df          = filter_year(normalise_time(metrics_df),          year)
+    extended_metrics_df = filter_year(normalise_time(extended_metrics_df), year)
+    eval_metrics_df     = filter_year(normalise_time(eval_metrics_df),     year)
+    composite_scores_df = filter_year(normalise_time(composite_scores_df), year)
+    red_flags_df        = filter_year(normalise_time(red_flags_df),        year)
 
     metrics_json          = dataframe_to_json(metrics_df)
     extended_metrics_json = dataframe_to_json(extended_metrics_df)

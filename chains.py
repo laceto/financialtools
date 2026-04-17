@@ -1,5 +1,32 @@
+# DEPRECATED — chains.py reads pre-computed Excel files from financial_data/.
+# Prefer financialtools.analysis.run_topic_analysis() which is self-contained
+# (no Excel files required) and supports all eight topic models including the
+# quantitative overview.  chains.py is retained for backward compatibility with
+# notebooks and scripts that depend on the Excel-based workflow.
+#
+# Migration:
+#   # Old (chains.py):
+#   from chains import get_stock_evaluation_report
+#   result = get_stock_evaluation_report("AAPL", "Technology Services", year=2023)
+#
+#   # New (analysis.py):
+#   from financialtools.analysis import run_topic_analysis
+#   result = run_topic_analysis("AAPL", sector="technology", year=2023)
+#   print(result.regime.regime)   # "bull" | "bear"
+#
+# See financialtools/analysis.py for full API documentation.
+
+import os
+
 from dotenv import load_dotenv
 load_dotenv()
+
+if not os.getenv("OPENAI_API_KEY"):
+    raise EnvironmentError(
+        "OPENAI_API_KEY not set — add it to your .env file (OPENAI_API_KEY=sk-...).\n"
+        "chains.py requires an OpenAI key to call the LLM. "
+        "See the project README for setup instructions."
+    )
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate

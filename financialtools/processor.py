@@ -1,9 +1,8 @@
 import yfinance as yf
 import os
 import pandas as pd
-from time import sleep
 from typing import Dict, Any, List
-from financialtools.exceptions import EvaluationError
+from financialtools.exceptions import DownloadError, EvaluationError
 import numpy as np
 import logging as _logging
 
@@ -12,62 +11,12 @@ import logging as _logging
 _logger = _logging.getLogger(__name__)
 
 
-class RateLimiter:
-    """
-    Token-bucket style rate limiter with sliding-window guards.
-
-    Thread-safe: all state mutations are protected by a threading.Lock.
-    acquire() is safe to call from multiple threads sharing one instance.
-
-    Limits:
-      per_minute  — max calls within any 60-second window
-      per_hour    — max calls within any 3600-second window
-      per_day     — max calls within any 86400-second window
-
-    acquire() sleeps until all three windows have a free slot, then records
-    the call timestamp.
-    """
-
-    def __init__(self, per_minute=60, per_hour=360, per_day=8000):
-        import threading
-        self.per_minute = per_minute
-        self.per_hour = per_hour
-        self.per_day = per_day
-        self.calls = []
-        self._lock = threading.Lock()
-
-    def acquire(self):
-        """
-        Block until a call is permissible under all three rate limits.
-
-        Uses sliding-window checks. Refreshes timestamps after each sleep so
-        stale-now values do not cause limit overruns. All state access is
-        protected by self._lock.
-        """
-        import time
-        with self._lock:
-            while True:
-                now = time.time()
-                # Prune calls older than 24 h to bound list growth.
-                self.calls = [t for t in self.calls if now - t < 86400]
-
-                calls_last_minute = [t for t in self.calls if now - t < 60]
-                calls_last_hour   = [t for t in self.calls if now - t < 3600]
-
-                wait = 0.0
-                if len(calls_last_minute) >= self.per_minute and calls_last_minute:
-                    wait = max(wait, 60 - (now - calls_last_minute[0]))
-                if len(calls_last_hour) >= self.per_hour and calls_last_hour:
-                    wait = max(wait, 3600 - (now - calls_last_hour[0]))
-                if len(self.calls) >= self.per_day and self.calls:
-                    wait = max(wait, 86400 - (now - self.calls[0]))
-
-                if wait <= 0.0:
-                    break  # all limits satisfied — proceed
-                sleep(max(0.0, wait))
-                # Re-enter loop to recompute with fresh timestamps after sleep.
-
-            self.calls.append(time.time())
+# RateLimiter moved to utils.py (M9 fix — generic threading utility has no
+# financial domain logic; see financialtools/utils.py for the implementation).
+# Re-exported here so existing imports of the form
+#   from financialtools.processor import RateLimiter
+# continue to work without change.
+from financialtools.utils import RateLimiter  # noqa: F401  (re-export)
 
 
 class Downloader:
@@ -80,7 +29,28 @@ class Downloader:
 
     @classmethod
     def from_ticker(cls, ticker):
-        """Download and reshape all financial data for one ticker."""
+        """Download and reshape all financial data for one ticker.
+
+        Returns
+        -------
+        Downloader
+            Fully populated instance with ``_balance_sheet``, ``_income_stmt``,
+            ``_cashflow``, and ``_info`` set.
+
+        Raises
+        ------
+        DownloadError
+            If yfinance raises any exception during data retrieval or reshaping.
+            Callers that need a soft-failure path should catch ``DownloadError``
+            explicitly — do **not** rely on an empty ``Downloader`` being returned.
+
+        Note
+        ----
+        This method never returns a ``Downloader`` with ``None`` internals.
+        Previously it returned ``cls(ticker)`` on failure (S4 fix), which was
+        indistinguishable from a valid empty-data ticker and caused silent
+        downstream errors in ``get_merged_data()`` and metric computation.
+        """
         import yfinance as yf
 
         try:
@@ -99,19 +69,18 @@ class Downloader:
             )
 
             df_info = pd.DataFrame(list(t.info.items()), columns=["key", "value"])
-            # df_info = df_info[df_info["key"].str.contains("marketCap|beta|industry|industryDisp|industryKey|longBusinessSummary|longName|sector|sectorDisp|sectorKey|website", 
+            # df_info = df_info[df_info["key"].str.contains("marketCap|beta|industry|industryDisp|industryKey|longBusinessSummary|longName|sector|sectorDisp|sectorKey|website",
             #                                case=True, na=False)]
             df_info.insert(0, "ticker", ticker)
             df_info = df_info.pivot(index=["ticker"], columns='key', values='value').reset_index()
             # df_info = df_info.pivot(index=["ticker"], columns='key', values='value')
             d._info = df_info
 
-
             return d
 
         except Exception as e:
             _logger.error(f"[{ticker}] from_ticker failed: {e}", exc_info=True)
-            return cls(ticker)
+            raise DownloadError(f"[{ticker}] download failed: {e}") from e
             
     # @staticmethod
     # def __format_fin_data(ticker: str, data_type: str, df: pd.DataFrame) -> pd.DataFrame:
@@ -847,14 +816,30 @@ class FundamentalTraderAssistant:
         """
         Evaluate financial metrics, compute scores, detect red flags, and return a summary.
 
-        Returns:
-        - dict with keys matching _EMPTY_RESULT_KEYS:
+        Returns
+        -------
+        dict with keys matching _EMPTY_RESULT_KEYS:
             "metrics": pd.DataFrame,
             "eval_metrics": pd.DataFrame,
             "composite_scores": pd.DataFrame,
             "raw_red_flags": pd.DataFrame,
             "red_flags": pd.DataFrame,
             "extended_metrics": pd.DataFrame
+
+        Raises
+        ------
+        EvaluationError
+            On any unrecoverable failure (empty metrics, unexpected exception).
+            Callers that need a soft result should catch EvaluationError explicitly
+            and call _empty_result() themselves — this method never silently returns
+            empty DataFrames on failure.
+
+        Design note
+        -----------
+        The previous implementation caught all exceptions and returned _empty_result().
+        That made it impossible for callers to distinguish a failure from a legitimate
+        empty result, causing the LLM pipeline to receive "[]" payloads and produce
+        hallucinated assessments. Raising on failure forces callers to be explicit.
         """
         try:
             # Step 1: Compute metrics
@@ -864,11 +849,10 @@ class FundamentalTraderAssistant:
             # Without this check the melt() below crashes with a misleading
             # KeyError (ticker/time absent) that obscures the real root cause.
             if m.empty:
-                _logger.error(
-                    "[%s] compute_metrics() returned empty — evaluate() aborted.",
-                    self.ticker,
+                raise EvaluationError(
+                    f"[{self.ticker}] compute_metrics() returned empty — "
+                    "check logs for the underlying error."
                 )
-                return _empty_result()
 
             ev = self.compute_valuation_metrics()
 
@@ -920,6 +904,13 @@ class FundamentalTraderAssistant:
                 "extended_metrics": ext,
             }
 
+        except EvaluationError:
+            raise  # already has context — don't wrap again
         except Exception as e:
-            _logger.error(f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}", exc_info=True)
-            return _empty_result()
+            _logger.error(
+                "[%s] evaluate() failed unexpectedly: %s",
+                getattr(self, "ticker", "?"), e, exc_info=True,
+            )
+            raise EvaluationError(
+                f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}"
+            ) from e

@@ -27,6 +27,15 @@ _RE_EXT = {
     "OCFRatio": 4, "FCFMargin": 6, "CashConversion": 4, "CapexRatio": 4,
 }
 
+# ---------------------------------------------------------------------------
+# grouped_weights — LEGACY, title-case sector names, grouped by category.
+# ---------------------------------------------------------------------------
+# Purpose: human-readable display in notebooks and ad-hoc analysis.
+#   Keys are category labels ("Profitability & Margins", "Returns", …).
+#   Values are flat {metric: weight} dicts.
+# Not used by any live pipeline (analysis.py, agents/, scripts/).
+# Use flatten_weights() from utils.py to convert to a flat dict when needed.
+# ---------------------------------------------------------------------------
 grouped_weights = {
     "Profitability & Margins": {
         "GrossMargin": 8,
@@ -58,6 +67,17 @@ grouped_weights = {
 }
 
 
+# ---------------------------------------------------------------------------
+# sector_metric_weights — LEGACY, title-case sector names, flat per-sector.
+# ---------------------------------------------------------------------------
+# Purpose: sector-weighted scoring for the chains.py / FundamentalTraderAssistant
+#   path that takes title-case sector names (e.g. "Technology Services").
+#   Superseded by sec_sector_metric_weights below, which uses yfinance sectorKey
+#   convention (lowercase-dash, e.g. "technology"). All new code should use
+#   sec_sector_metric_weights. This dict is retained for backward compatibility
+#   with chains.py and any notebooks that reference title-case sectors.
+# Not imported by analysis.py, agents/, or any live pipeline scripts.
+# ---------------------------------------------------------------------------
 sector_metric_weights = {
     "Commercial Services": {
         "GrossMargin": 10, "OperatingMargin": 12, "NetProfitMargin": 10,

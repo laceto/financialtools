@@ -61,6 +61,10 @@ def prepare_data_node(state: AnalysisState) -> dict:
     Raises ValueError on any download or evaluation failure so the graph
     surfaces the error immediately rather than silently producing empty results.
 
+    State keys read (inputs)
+    -----------------------
+    ticker, sector, year, force_refresh
+
     State keys written
     ------------------
     cache_key, company_name, resolved_sector,
@@ -76,6 +80,7 @@ def prepare_data_node(state: AnalysisState) -> dict:
             ticker=ticker,
             sector=state.get("sector"),
             year=state.get("year"),
+            force_refresh=bool(state.get("force_refresh", False)),
         )
     except Exception as exc:
         raise ValueError(f"[prepare_data_node] {exc}") from exc

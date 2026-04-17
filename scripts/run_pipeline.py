@@ -56,6 +56,7 @@ from typing import Optional
 import pandas as pd
 
 # --- package imports --------------------------------------------------------
+from financialtools.analysis import build_weights
 from financialtools.config import sec_sector_metric_weights
 from financialtools.processor import Downloader, _empty_result
 from financialtools.wrappers import export_financial_results, merge_results
@@ -86,27 +87,6 @@ FAILED_LOG_NAME = "failed_tickers.log"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _build_weights(sector: str) -> pd.DataFrame:
-    """
-    Build a weights DataFrame for a given sector.
-
-    Falls back to 'default' if the sector is not in sec_sector_metric_weights.
-    Returned columns: metrics, weights, sector.
-    """
-    if sector in sec_sector_metric_weights:
-        raw = sec_sector_metric_weights[sector]
-    else:
-        logger.warning(
-            f"Sector '{sector}' not in sec_sector_metric_weights — using 'default'."
-        )
-        raw = sec_sector_metric_weights["default"]
-
-    return (
-        pd.DataFrame(list(raw.items()), columns=["metrics", "weights"])
-        .assign(sector=sector)
-    )
-
 
 def _sector_done(sector: str, output_dir: str) -> bool:
     """Return True if a per-sector composite_scores checkpoint already exists."""
@@ -205,7 +185,7 @@ def evaluate_sector(
     from financialtools.processor import FundamentalTraderAssistant
     from financialtools.exceptions import EvaluationError
 
-    weights = _build_weights(sector)
+    weights = build_weights(sector)
     results: dict[str, dict] = {}
 
     for ticker, df in ticker_data.items():
