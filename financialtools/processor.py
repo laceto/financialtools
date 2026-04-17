@@ -380,6 +380,11 @@ class FundamentalMetricsEvaluator:
         self.scores = pd.DataFrame()
         self.weights = weights
         # Validate: exactly one non-null ticker — fail fast with a clear message.
+        if 'ticker' not in data.columns or data.empty:
+            raise EvaluationError(
+                "data DataFrame is empty or missing a 'ticker' column — "
+                "pass a non-empty merged DataFrame from Downloader.get_merged_data()."
+            )
         tickers = data['ticker'].dropna().unique()
         if len(tickers) == 0:
             raise EvaluationError(
