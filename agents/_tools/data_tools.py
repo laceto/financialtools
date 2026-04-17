@@ -40,7 +40,7 @@ from financialtools.analysis import (
     normalise_time,
 )
 from financialtools.exceptions import DownloadError, EvaluationError
-from financialtools.processor import Downloader, FundamentalTraderAssistant
+from financialtools.processor import Downloader, FundamentalMetricsEvaluator
 from financialtools.utils import dataframe_to_json
 
 _logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ def _download_and_evaluate(
 
     # ── Stage 2: Evaluate ────────────────────────────────────────────────────
     weights = build_weights(sector)
-    fta = FundamentalTraderAssistant(data=merged, weights=weights)
+    fta = FundamentalMetricsEvaluator(data=merged, weights=weights)
     evaluate_out = fta.evaluate()
 
     # ── Stage 3: Normalise + filter ──────────────────────────────────────────

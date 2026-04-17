@@ -28,7 +28,7 @@ from financialtools.analysis import (
 )
 from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
-from financialtools.processor import Downloader, FundamentalTraderAssistant
+from financialtools.processor import Downloader, FundamentalMetricsEvaluator
 from financialtools.utils import dataframe_to_json
 
 logging.basicConfig(level=logging.INFO)
@@ -114,7 +114,7 @@ def _stage_download_evaluate(ticker: str, sector: str) -> dict:
             "Check the ticker symbol and network connectivity."
         )
     weights = build_weights(sector)
-    fta = FundamentalTraderAssistant(data=merged, weights=weights)
+    fta = FundamentalMetricsEvaluator(data=merged, weights=weights)
     return fta.evaluate()
 
 

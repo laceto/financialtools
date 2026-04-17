@@ -1,5 +1,5 @@
 """
-Unit tests for FundamentalTraderAssistant.
+Unit tests for FundamentalMetricsEvaluator.
 
 All tests use a synthetic 3-row DataFrame — no network calls, no .env required.
 
@@ -17,7 +17,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from financialtools.processor import FundamentalTraderAssistant, SCORED_METRICS
+from financialtools.processor import FundamentalMetricsEvaluator, SCORED_METRICS
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +117,10 @@ def _make_fta(
     fcfs=(8.0, 10.0, 12.0),
     times=("2022", "2023", "2024"),
     sector: str = "technology",
-) -> FundamentalTraderAssistant:
+) -> FundamentalMetricsEvaluator:
     data    = _make_data(revenues=revenues, net_incomes=net_incomes, fcfs=fcfs, times=times)
     weights = _make_weights(sector)
-    return FundamentalTraderAssistant(data, weights)
+    return FundamentalMetricsEvaluator(data, weights)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ class TestScoreMetricThresholds(unittest.TestCase):
     def _score_one(self, metric: str, value: float) -> int:
         fta = _make_fta()
         df = pd.DataFrame({"metrics": [metric], "value": [value]})
-        result = fta.score_metric(df)
+        result = fta._score_metric(df)
         return int(result["score"].iloc[0])
 
     # ── QuickRatio: [0.5, 0.8, 1.0, 1.5] ─────────────────────────────────
@@ -263,7 +263,7 @@ class TestInverseScoring(unittest.TestCase):
     def _score_one(self, metric: str, value: float) -> int:
         fta = _make_fta()
         df = pd.DataFrame({"metrics": [metric], "value": [value]})
-        return int(fta.score_metric(df)["score"].iloc[0])
+        return int(fta._score_metric(df)["score"].iloc[0])
 
     def test_debt_ratio_low_value_gets_high_score(self):
         # DebtRatio 0.1 < 0.2 (first threshold) → digitize=0+1=1 → 6-1=5
@@ -337,7 +337,7 @@ class TestMissingOptionalColumns(unittest.TestCase):
         data = _make_data()
         data = data.drop(columns=["inventory"])
         weights = _make_weights()
-        fta = FundamentalTraderAssistant(data, weights)
+        fta = FundamentalMetricsEvaluator(data, weights)
         m = fta.compute_metrics()
         self.assertTrue(m["QuickRatio"].isna().all())
 
@@ -345,7 +345,7 @@ class TestMissingOptionalColumns(unittest.TestCase):
         data = _make_data()
         data = data.drop(columns=["invested_capital"])
         weights = _make_weights()
-        fta = FundamentalTraderAssistant(data, weights)
+        fta = FundamentalMetricsEvaluator(data, weights)
         m = fta.compute_metrics()
         self.assertTrue(m["ROIC"].isna().all())
 
@@ -353,7 +353,7 @@ class TestMissingOptionalColumns(unittest.TestCase):
         data = _make_data()
         data = data.drop(columns=["ebit"])
         weights = _make_weights()
-        fta = FundamentalTraderAssistant(data, weights)
+        fta = FundamentalMetricsEvaluator(data, weights)
         m = fta.compute_metrics()
         self.assertTrue(m["InterestCoverage"].isna().all())
 
@@ -442,7 +442,7 @@ class TestBankLikeDataNoKeyError(unittest.TestCase):
     def setUp(self):
         data    = _make_bank_data()
         weights = _make_weights("financial-services")
-        self.fta = FundamentalTraderAssistant(data, weights)
+        self.fta = FundamentalMetricsEvaluator(data, weights)
 
     def test_compute_metrics_does_not_raise(self):
         """compute_metrics() must return a DataFrame, not raise KeyError."""

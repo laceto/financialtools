@@ -20,7 +20,18 @@ from financialtools.utils import RateLimiter  # noqa: F401  (re-export)
 
 
 class Downloader:
-    def __init__(self, ticker):
+    def __init__(self, ticker, _from_factory: bool = False):
+        """Internal constructor — use ``Downloader.from_ticker(ticker)`` instead.
+
+        Direct instantiation leaves all financial data as None, causing silent
+        empty-DataFrame returns from ``get_merged_data()`` and all metric methods.
+        """
+        if not _from_factory:
+            raise TypeError(
+                "Use Downloader.from_ticker(ticker) to construct a Downloader. "
+                "Direct instantiation leaves financial data unloaded, which causes "
+                "silent empty-DataFrame returns from get_merged_data() and evaluate()."
+            )
         self.ticker = ticker
         self._balance_sheet = None
         self._income_stmt = None
@@ -55,7 +66,7 @@ class Downloader:
 
         try:
             t = yf.Ticker(ticker)
-            d = cls(ticker)
+            d = cls(ticker, _from_factory=True)
 
             # raw data
             d._balance_sheet = cls.__reshape_fin_data(
@@ -231,8 +242,20 @@ class Downloader:
             return pd.DataFrame()
 
     @classmethod
-    def stream_download(cls, tickers, limiter, out_dir="financial_data"):
-        """Stream tickers one by one, save each to Parquet/JSON as soon as ready."""
+    def stream_download(
+        cls,
+        tickers: list[str],
+        limiter: "RateLimiter",
+        out_dir: str = "financial_data",
+    ):
+        """Stream tickers one by one, saving each to Parquet as soon as ready.
+
+        Yields each successfully downloaded ``Downloader`` instance.
+
+        Note: ``out_dir`` is relative to the caller's working directory, not the
+        package root. Pass an absolute path (e.g. ``str(Path.cwd() / "data")``) if
+        you need deterministic output placement from notebooks or scripts.
+        """
         import os
         import pandas as pd
 
@@ -334,10 +357,14 @@ SCORED_METRICS: list = [
 ]
 
 
-class FundamentalTraderAssistant:
-    """
-    An assistant class for analyzing fundamental financial metrics and identifying red flags
-    in company financial data.
+class FundamentalMetricsEvaluator:
+    """Fundamental metrics evaluator and scorer.
+
+    Computes financial ratios, scores them against sector weights, identifies
+    red flags, and returns a structured dict via ``evaluate()``.
+
+    Construct via ``FundamentalEvaluator`` (the high-level wrapper in
+    ``wrappers.py``) rather than directly, unless you need lower-level control.
     """
 
     def __init__(self, data: pd.DataFrame, weights: pd.DataFrame):
@@ -353,6 +380,11 @@ class FundamentalTraderAssistant:
         self.scores = pd.DataFrame()
         self.weights = weights
         # Validate: exactly one non-null ticker — fail fast with a clear message.
+        if 'ticker' not in data.columns or data.empty:
+            raise EvaluationError(
+                "data DataFrame is empty or missing a 'ticker' column — "
+                "pass a non-empty merged DataFrame from Downloader.get_merged_data()."
+            )
         tickers = data['ticker'].dropna().unique()
         if len(tickers) == 0:
             raise EvaluationError(
@@ -555,7 +587,7 @@ class FundamentalTraderAssistant:
             _logger.error(f"[{self.ticker}] compute_metrics failed: {e}", exc_info=True)
             return pd.DataFrame()
 
-    def score_metric(self, df):
+    def _score_metric(self, df):
         """
         Apply trader-friendly scoring rules to a DataFrame with 'metrics' and 'value' columns.
 
@@ -635,7 +667,7 @@ class FundamentalTraderAssistant:
                 var_name="metrics",
                 value_name="value"
             )
-            scored = self.score_metric(df)
+            scored = self._score_metric(df)
             scored['sector'] = self.sector
             # Store in metric_scores (long, per-metric) — NOT self.scores (composite).
             self.metric_scores = scored
@@ -756,7 +788,7 @@ class FundamentalTraderAssistant:
             )
             return pd.DataFrame()
 
-    def metrics_red_flags(self, df):
+    def _metrics_red_flags(self, df):
         """Add red flag names to a long-format DataFrame with 'metrics' and 'value' columns.
 
         Returns a new DataFrame — does not mutate the input.
@@ -873,7 +905,7 @@ class FundamentalTraderAssistant:
             )
 
             # Step 4: Score metrics
-            s = self.score_metric(m_long)
+            s = self._score_metric(m_long)
 
             # Step 5: Merge weights
             s = s.merge(self.weights, how="left", on="metrics")
@@ -888,7 +920,7 @@ class FundamentalTraderAssistant:
             self.scores = self._compute_composite_scores(s)
 
             # Step 7: Detect red flags
-            rf = self.metrics_red_flags(m_long)
+            rf = self._metrics_red_flags(m_long)
             self.red_flags = rf[["ticker", "time", "metrics", "red_flag"]]
 
             # Step 8: Compute extended (unscored) metrics
@@ -914,3 +946,22 @@ class FundamentalTraderAssistant:
             raise EvaluationError(
                 f"[{getattr(self, 'ticker', '?')}] evaluate() failed: {e}"
             ) from e
+
+
+class FundamentalTraderAssistant(FundamentalMetricsEvaluator):
+    """Deprecated alias for ``FundamentalMetricsEvaluator``.
+
+    Will be removed in a future release. Update imports to::
+
+        from financialtools.processor import FundamentalMetricsEvaluator
+    """
+
+    def __init__(self, data: pd.DataFrame, weights: pd.DataFrame):
+        import warnings
+        warnings.warn(
+            "FundamentalTraderAssistant is deprecated — use FundamentalMetricsEvaluator. "
+            "The old name will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(data=data, weights=weights)

@@ -10,7 +10,7 @@ pip install -r requirements.txt                               # all deps
 python -m unittest discover -s tests                          # run all tests
 python -m unittest tests/test_processor.py                    # single test file
 streamlit run app.py                                          # Streamlit UI
-python scripts/run_analysis.py --ticker AAPL --sector "Technology Services"
+python scripts/run_analysis.py --ticker AAPL --sector technology
 python scripts/run_analysis.py --list-sectors
 python -m unittest tests/test_financial_agent.py              # agents/ tests
 ```

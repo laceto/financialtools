@@ -63,7 +63,7 @@ from langchain_openai import ChatOpenAI
 
 from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
-from financialtools.processor import Downloader, FundamentalTraderAssistant
+from financialtools.processor import Downloader, FundamentalMetricsEvaluator
 from financialtools.pydantic_models import (
     CashFlowAssessment,
     ComprehensiveStockAssessment,
@@ -171,6 +171,19 @@ class TopicAnalysisResult:
     regime: Optional[StockRegimeAssessment] = None
     evaluate_output: dict = field(default_factory=dict)
 
+    @property
+    def failed_topics(self) -> list[str]:
+        """Return the names of topics where the LLM chain returned None.
+
+        Useful for batch pipelines that need to detect and retry partial failures
+        without inspecting every topic field individually.
+        """
+        _topic_fields = [
+            "liquidity", "solvency", "profitability", "efficiency",
+            "cash_flow", "growth", "red_flags", "quantitative_overview", "regime",
+        ]
+        return [f for f in _topic_fields if getattr(self, f) is None]
+
     def to_dict(self) -> dict:
         """
         Serialise all Pydantic assessments to plain dicts.
@@ -178,6 +191,10 @@ class TopicAnalysisResult:
         Returns a dict with the same keys as the dataclass fields, where
         each Pydantic model is replaced by its .model_dump() output.
         None fields are preserved as None.
+
+        Note: ``evaluate_output`` is intentionally excluded — it contains
+        pandas DataFrames which are not JSON-serialisable. Access it directly
+        on the dataclass instance if you need the raw metrics.
         """
         def _dump(obj):
             return obj.model_dump() if obj is not None else None
@@ -230,6 +247,15 @@ def build_weights(sector: str) -> pd.DataFrame:
         "metrics": list(sector_weights_dict.keys()),
         "weights": list(sector_weights_dict.values()),
     })
+
+
+def list_sectors() -> list[str]:
+    """Return all valid sector names accepted by build_weights() and run_topic_analysis().
+
+    Uses yfinance sectorKey convention (lowercase, hyphenated), e.g. "technology",
+    "financial-services". "default" is always present as a fallback.
+    """
+    return sorted(sec_sector_metric_weights.keys())
 
 
 def normalise_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -290,12 +316,12 @@ def _build_chain_parts(system_prompt_str: str, model_cls: type, llm: ChatOpenAI)
     return prompt, parser
 
 
-def _build_topic_chain(topic: str, llm: ChatOpenAI):
+def build_topic_chain(topic: str, llm: ChatOpenAI):
     """
     Build prompt + parser for a topic chain.
 
     Returns (prompt, parser) — not a pre-built Runnable — so that
-    _invoke_chain can handle the fix retry without an extra closure.
+    invoke_chain can handle the fix retry without an extra closure.
 
     Parameters
     ----------
@@ -324,7 +350,7 @@ def _build_regime_chain(llm: ChatOpenAI):
     return prompt, parser
 
 
-def _invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
+def invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
     """
     Invoke a chain with one-shot output-fixing retry.
 
@@ -367,6 +393,11 @@ def _invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
                 ticker, topic, retry_exc,
             )
             return None
+
+
+# Backward-compat aliases — will be removed in a future release.
+_build_topic_chain = build_topic_chain
+_invoke_chain = invoke_chain
 
 
 # ---------------------------------------------------------------------------
@@ -444,8 +475,8 @@ def run_topic_analysis(
     _logger.info("[%s] Building weights for sector '%s' …", ticker, sector)
     weights = build_weights(sector)
 
-    _logger.info("[%s] Running FundamentalTraderAssistant.evaluate() …", ticker)
-    fta = FundamentalTraderAssistant(data=merged, weights=weights)
+    _logger.info("[%s] Running FundamentalMetricsEvaluator.evaluate() …", ticker)
+    fta = FundamentalMetricsEvaluator(data=merged, weights=weights)
     evaluate_out = fta.evaluate()
     result.evaluate_output = evaluate_out
 
@@ -487,13 +518,13 @@ def run_topic_analysis(
 
     for topic in _TOPIC_MAP:
         _logger.info("[%s] Running '%s' chain …", ticker, topic)
-        prompt, parser = _build_topic_chain(topic, llm)
-        assessment = _invoke_chain(prompt, parser, llm, topic_inputs, topic, ticker)
+        prompt, parser = build_topic_chain(topic, llm)
+        assessment = invoke_chain(prompt, parser, llm, topic_inputs, topic, ticker)
         setattr(result, topic, assessment)
 
     _logger.info("[%s] Running 'regime' chain …", ticker)
     regime_prompt, regime_parser = _build_regime_chain(llm)
-    result.regime = _invoke_chain(
+    result.regime = invoke_chain(
         regime_prompt, regime_parser, llm, topic_inputs, "regime", ticker
     )
 

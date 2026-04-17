@@ -46,7 +46,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from agents._cache import read_payloads, write_topic_result
-from financialtools.analysis import _build_topic_chain, _invoke_chain
+from financialtools.analysis import build_topic_chain, invoke_chain
 
 load_dotenv()
 
@@ -94,7 +94,7 @@ def _analyse_topic(payloads: dict, topic: str, model: str = _DEFAULT_MODEL) -> s
     _logger.info("[%s] Starting analysis for topic '%s'", log_key, topic)
     try:
         llm = ChatOpenAI(model=model, temperature=0)
-        prompt, parser = _build_topic_chain(topic, llm)
+        prompt, parser = build_topic_chain(topic, llm)
 
         inputs = {
             "metrics":          payloads["metrics"],
@@ -104,7 +104,7 @@ def _analyse_topic(payloads: dict, topic: str, model: str = _DEFAULT_MODEL) -> s
             "red_flags":        payloads["red_flags"],
         }
 
-        assessment = _invoke_chain(prompt, parser, llm, inputs, topic, ticker)
+        assessment = invoke_chain(prompt, parser, llm, inputs, topic, ticker)
 
         if assessment is None:
             msg = f"LLM chain for topic '{topic}' failed after fix retry — see logs."
