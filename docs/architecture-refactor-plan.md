@@ -111,7 +111,7 @@ Execute in order: S-items → M-items (top-down) → L-items last.
 
 ### L — Large (structural split, do last)
 
-- [ ] **L1** Split `processor.py` into `downloader.py` + `evaluator.py`  
+- [x] **L1** Split `processor.py` into `downloader.py` + `evaluator.py`  
   `processor.py` is ~970 lines with two unrelated classes. `Downloader` depends on `yfinance`; `FundamentalMetricsEvaluator` depends only on `pandas`/`numpy`/`config`. Co-location is historical, not functional.  
   Files: `financialtools/downloader.py` (new), `financialtools/evaluator.py` (new), `financialtools/processor.py` (re-export shim)  
   Acceptance: `from financialtools.processor import Downloader, FundamentalMetricsEvaluator` still works; all callers unchanged; all tests pass.  
@@ -125,8 +125,8 @@ Execute in order: S-items → M-items (top-down) → L-items last.
 |-------|-------|------|-----------|
 | S (Small) | 5 | 5 | 0 |
 | M (Medium) | 6 | 5 | 1 |
-| L (Large) | 1 | 0 | 1 |
-| **Total** | **12** | **10** | **2** |
+| L (Large) | 1 | 1 | 0 |
+| **Total** | **12** | **11** | **1** |
 
 ---
 
@@ -144,3 +144,4 @@ Execute in order: S-items → M-items (top-down) → L-items last.
 | 2026-04-17 | M3 | Done | `build_weights()` + `list_sectors()` moved to `utils.py` (+ `config` import). `analysis.py` re-exports them via `from financialtools.utils import ...`; `sec_sector_metric_weights` import removed from `analysis.py`. `wrappers.py` deferred import replaced with module-level `from financialtools.utils import build_weights`. All 6 import sites verified unchanged. |
 | 2026-04-17 | M4 | Done | `"regime"` added to `_TOPIC_MAP`; `_build_regime_chain()` deleted from `analysis.py`. `run_topic_analysis()` loop now covers regime automatically. `app.py`: removed `_build_regime_chain` import; added `_DISPLAY_TOPICS` filter; fixed pre-existing `quantitative_overview` gap in `_TOPIC_LABEL`/`_TOPIC_RENDERERS`; Stage 4 uses `_build_topic_chain("regime", llm)`. |
 | 2026-04-17 | M6 | Done | `DownloaderWrapper` class removed; 4 static methods promoted to module-level functions (`_preprocess_df`, `_download_single_ticker`, `_download_multiple_tickers`, `download_data`). `DownloaderWrapper` kept as a 3-line shim: `download_data = staticmethod(download_data)`. All internal `DownloaderWrapper.X` calls replaced with plain `X`. |
+| 2026-04-17 | L1 | Done | `processor.py` (~970 lines) split into `downloader.py` (Downloader + RateLimiter re-export) and `evaluator.py` (FundamentalMetricsEvaluator, FundamentalTraderAssistant, _empty_result, constants). `processor.py` replaced with a 20-line re-export shim. All 7 import sites remain unchanged. 61 tests: same 4 pre-existing cache_key failures, no new failures. |
