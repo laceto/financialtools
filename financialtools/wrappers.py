@@ -60,168 +60,131 @@ def _configure_logging() -> None:
 
 
 
-class DownloaderWrapper:
-    """Static namespace for download helpers — do not instantiate.
+def _preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Extract year from 'time' column and reorder columns to place 'time' last."""
+    try:
+        out = df.copy()
+        out["time"] = pd.to_datetime(out["time"]).dt.year
+        cols = [c for c in df.columns if c != "time"] + ["time"]
+        return out[cols]
+    except Exception as e:
+        logger.error("Error preprocessing data: %s", e, exc_info=True)
+        return pd.DataFrame()
 
-    All methods are ``@staticmethod``; there is no instance state.
-    Use ``DownloaderWrapper.download_data(tickers)`` directly.
+
+def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
+    """Download and return merged financials for one ticker, enriched with company_name and sector.
+
+    Returns None on failure — never raises.
+
+    Enrichment
+    ----------
+    company_name : lowercased longName from yfinance info, falls back to ticker
+    sector       : lowercased hyphenated sectorKey (e.g. "financial-services"),
+                   falls back to "default"
     """
+    _configure_logging()
+    logger.info(f"[{ticker}] Starting download")
+    try:
+        time.sleep(2)  # avoid hitting rate limits
+        processor = Downloader.from_ticker(ticker)
+        merged_data = processor.get_merged_data()
+        merged_data.columns = merged_data.columns.str.lower().str.replace(" ", "_")
+        merged_data = _preprocess_df(merged_data)
+
+        info_df = processor.get_info_data()
+        if not info_df.empty and "longName" in info_df.columns:
+            company_name = info_df["longName"].str.lower().to_string(index=False).strip()
+        else:
+            company_name = ticker.lower()
+            logger.warning(f"[{ticker}] longName not found in info; using ticker as name")
+
+        merged_data["company_name"] = company_name
+        merged_data["sector"] = resolve_sector(info_df)
+
+        logger.info(f"[{ticker}] Download and processing successful")
+        return merged_data
+    except Exception as e:
+        logger.error(f"[{ticker}] Error: {e}")
+        logger.debug(f"[{ticker}] Traceback:\n{traceback.format_exc()}")
+        return None
+
+
+def _download_multiple_tickers(
+    tickers: list[str],
+    max_workers: int = 4,
+) -> pd.DataFrame | None:
+    """Download and combine data for multiple tickers in parallel.
+
+    Uses ThreadPoolExecutor so network I/O overlaps across tickers.
+    Each worker calls _download_single_ticker, which returns None on failure —
+    no single ticker failure propagates to others or the caller.
+
+    Returns concatenated DataFrame of all successful downloads, or None if all fail.
+    """
+    _configure_logging()
+    fin_data: list[pd.DataFrame] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_download_single_ticker, t): t
+            for t in tickers
+        }
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                logger.error("[%s] Unexpected exception in download worker: %s", ticker, exc, exc_info=True)
+                result = None
+            if result is not None:
+                fin_data.append(result)
+
+    if not fin_data:
+        return None
+    return pd.concat(fin_data, ignore_index=True)
+
+
+def download_data(tickers: str | list[str]) -> pd.DataFrame:
+    """Download merged financials for one or multiple tickers.
+
+    Parameters
+    ----------
+    tickers : str or list[str]
+
+    Returns
+    -------
+    pd.DataFrame
+        All downloaded rows concatenated.
+
+    Raises
+    ------
+    DownloadError
+        If all downloads fail.
+    TypeError
+        If tickers is not a str or list[str].
+    """
+    if isinstance(tickers, str):
+        result = _download_single_ticker(tickers)
+    elif isinstance(tickers, list):
+        result = _download_multiple_tickers(tickers)
+    else:
+        raise TypeError("tickers must be a str or list of str")
+
+    if result is None:
+        label = tickers if isinstance(tickers, str) else f"{len(tickers)} tickers"
+        raise DownloadError(
+            f"download_data({label!r}) failed — all downloads returned no data. "
+            "Check logs for per-ticker errors."
+        )
+    return result
+
+
+class DownloaderWrapper:
+    """Backward-compatible shim — use module-level download_data() directly."""
 
     __slots__ = ()
-
-    @staticmethod
-    def _preprocess_df(df):
-        """
-        Preprocesses the input DataFrame by:
-        - Extracting the year from the 'time' column
-        - Reordering columns to place 'time' last
-
-        Parameters:
-            df (pd.DataFrame): Original DataFrame
-
-        Returns:
-            pd.DataFrame: Preprocessed DataFrame
-        """
-        try:
-            out = df.copy()
-            out["time"] = pd.to_datetime(out["time"]).dt.year
-            cols = [c for c in df.columns if c != "time"] + ["time"]
-            return out[cols]
-        except Exception as e:
-            logger.error("Error preprocessing data: %s", e, exc_info=True)
-            return pd.DataFrame()
-    
-    @staticmethod
-    def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
-        """
-        Internal helper: Download and return data for a single ticker.
-        Returns None if download fails.
-        Logs to multiple files with timestamp and ticker context.
-
-        Enrichment (mirrors _download_and_evaluate in agents/_tools/data_tools.py)
-        --------------------------------------------------------------------------
-        After downloading merged financials, calls get_info_data() to attach two
-        columns to the result:
-          - company_name : lowercased longName from yfinance info, falls back to ticker
-          - sector       : lowercased, hyphenated sectorKey (e.g. "financial-services"),
-                           falls back to "default"
-        """
-        _configure_logging()
-        logger.info(f"[{ticker}] Starting download")
-        try:
-            time.sleep(2)  # avoid hitting rate limits
-            processor = Downloader.from_ticker(ticker)
-            merged_data = processor.get_merged_data()
-            merged_data.columns = merged_data.columns.str.lower().str.replace(" ", "_")
-            merged_data = DownloaderWrapper._preprocess_df(merged_data)
-
-            # ── Enrich: company name ─────────────────────────────────────────
-            info_df = processor.get_info_data()
-            if not info_df.empty and "longName" in info_df.columns:
-                company_name = info_df["longName"].str.lower().to_string(index=False).strip()
-            else:
-                company_name = ticker.lower()
-                logger.warning(f"[{ticker}] longName not found in info; using ticker as name")
-
-            # ── Enrich: sector ───────────────────────────────────────────────
-            sector = resolve_sector(info_df)
-
-            merged_data["company_name"] = company_name
-            merged_data["sector"] = sector
-
-            logger.info(f"[{ticker}] Download and processing successful")
-            return merged_data
-        except Exception as e:
-            logger.error(f"[{ticker}] Error: {e}")
-            logger.debug(f"[{ticker}] Traceback:\n{traceback.format_exc()}")
-            return None
-
-
-    @staticmethod
-    def _download_multiple_tickers(
-        tickers: list[str],
-        max_workers: int = 4,
-    ) -> pd.DataFrame | None:
-        """
-        Internal helper: Download and combine data for multiple tickers in parallel.
-
-        Uses ``ThreadPoolExecutor`` so network I/O for different tickers overlaps.
-        Each worker calls ``_download_single_ticker``, which already handles its
-        own exceptions and returns ``None`` on failure — no ticker failure
-        propagates to other workers or to the caller.
-
-        Parameters
-        ----------
-        tickers     : List of ticker symbols to download.
-        max_workers : Thread pool size (default 4). Keep this low — yfinance
-                      is rate-sensitive and each thread may trigger a brief
-                      ``time.sleep(2)`` inside ``_download_single_ticker``.
-
-        Returns
-        -------
-        pd.DataFrame
-            All successful downloads concatenated, in completion order.
-        None
-            If every ticker failed.
-        """
-        _configure_logging()
-        fin_data: list[pd.DataFrame] = []
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(DownloaderWrapper._download_single_ticker, t): t
-                for t in tickers
-            }
-            for future in as_completed(futures):
-                ticker = futures[future]
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    # _download_single_ticker should never raise, but guard anyway.
-                    logger.error("[%s] Unexpected exception in download worker: %s", ticker, exc, exc_info=True)
-                    result = None
-                if result is not None:
-                    fin_data.append(result)
-
-        if not fin_data:
-            return None
-        return pd.concat(fin_data, ignore_index=True)
-
-    @staticmethod
-    def download_data(tickers: str | list[str]) -> pd.DataFrame:
-        """Download data for one or multiple tickers.
-
-        Parameters
-        ----------
-        tickers : str or list[str]
-
-        Returns
-        -------
-        pd.DataFrame
-            All downloaded rows concatenated.
-
-        Raises
-        ------
-        DownloadError
-            If all downloads fail (single ticker or every ticker in the list).
-            Consistent with ``Downloader.from_ticker()`` which also raises on failure.
-        TypeError
-            If ``tickers`` is not a str or list[str].
-        """
-        if isinstance(tickers, str):
-            result = DownloaderWrapper._download_single_ticker(tickers)
-        elif isinstance(tickers, list):
-            result = DownloaderWrapper._download_multiple_tickers(tickers)
-        else:
-            raise TypeError("tickers must be a str or list of str")
-
-        if result is None:
-            label = tickers if isinstance(tickers, str) else f"{len(tickers)} tickers"
-            raise DownloadError(
-                f"download_data({label!r}) failed — all downloads returned no data. "
-                "Check logs for per-ticker errors."
-            )
-        return result
+    download_data = staticmethod(download_data)
         
 
 

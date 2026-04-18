@@ -95,14 +95,15 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TOPIC_MAP: dict[str, tuple[str, type]] = {
-    "liquidity":              (system_prompt_liquidity,             LiquidityAssessment),
-    "solvency":               (system_prompt_solvency,              SolvencyAssessment),
-    "profitability":          (system_prompt_profitability,         ProfitabilityAssessment),
-    "efficiency":             (system_prompt_efficiency,            EfficiencyAssessment),
-    "cash_flow":              (system_prompt_cash_flow,             CashFlowAssessment),
-    "growth":                 (system_prompt_growth,                GrowthAssessment),
-    "red_flags":              (system_prompt_red_flags,             RedFlagsAssessment),
-    "quantitative_overview":  (system_prompt_quantitative_overview, QuantitativeOverviewAssessment),
+    "liquidity":              (system_prompt_liquidity,                      LiquidityAssessment),
+    "solvency":               (system_prompt_solvency,                       SolvencyAssessment),
+    "profitability":          (system_prompt_profitability,                  ProfitabilityAssessment),
+    "efficiency":             (system_prompt_efficiency,                     EfficiencyAssessment),
+    "cash_flow":              (system_prompt_cash_flow,                      CashFlowAssessment),
+    "growth":                 (system_prompt_growth,                         GrowthAssessment),
+    "red_flags":              (system_prompt_red_flags,                      RedFlagsAssessment),
+    "quantitative_overview":  (system_prompt_quantitative_overview,          QuantitativeOverviewAssessment),
+    "regime":                 (system_prompt_StockRegimeAssessment_extended, StockRegimeAssessment),
 }
 
 # Human message template shared by all topic chains and the regime chain.
@@ -287,18 +288,6 @@ def build_topic_chain(topic: str, llm: ChatOpenAI):
     return _build_chain_parts(system_prompt_str, model_cls, llm)
 
 
-def _build_regime_chain(llm: ChatOpenAI):
-    """
-    Build prompt + parser for the overall StockRegimeAssessment chain.
-
-    Uses system_prompt_StockRegimeAssessment_extended so the LLM sees
-    all 24 scored + 14 extended unscored metrics.
-    """
-    return _build_chain_parts(
-        system_prompt_StockRegimeAssessment_extended, StockRegimeAssessment, llm
-    )
-
-
 def invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):
     """
     Invoke a chain with one-shot output-fixing retry.
@@ -363,7 +352,7 @@ def run_topic_analysis(
     Run the full fundamental analysis pipeline for a single ticker.
 
     Downloads yfinance data, computes 24 scored + 14 extended metrics, then
-    calls eight LLM chains (seven topic models + StockRegimeAssessment) and
+    calls nine LLM chains (eight topic models + StockRegimeAssessment) and
     returns a structured TopicAnalysisResult.
 
     Parameters
@@ -470,12 +459,6 @@ def run_topic_analysis(
         prompt, parser = build_topic_chain(topic, llm)
         assessment = invoke_chain(prompt, parser, llm, topic_inputs, topic, ticker)
         setattr(result, topic, assessment)
-
-    _logger.info("[%s] Running 'regime' chain …", ticker)
-    regime_prompt, regime_parser = _build_regime_chain(llm)
-    result.regime = invoke_chain(
-        regime_prompt, regime_parser, llm, topic_inputs, "regime", ticker
-    )
 
     _logger.info("[%s] Analysis complete.", ticker)
     return result

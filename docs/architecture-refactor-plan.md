@@ -91,7 +91,7 @@ Execute in order: S-items → M-items (top-down) → L-items last.
   Files: `financialtools/utils.py`, `financialtools/analysis.py`, `financialtools/wrappers.py`  
   Acceptance: deferred import removed; top-level import works; `__init__.py` unchanged; tests pass.
 
-- [ ] **M4** Add `"regime"` to `_TOPIC_MAP`; delete `_build_regime_chain()`  
+- [x] **M4** Add `"regime"` to `_TOPIC_MAP`; delete `_build_regime_chain()`  
   `_TOPIC_MAP` is the single source of truth for topic → (prompt, model_cls). Regime is currently excluded, creating a second source of truth.  
   Files: `financialtools/analysis.py`  
   Acceptance: `_TOPIC_MAP["regime"]` entry added; `_build_regime_chain` deleted; `run_topic_analysis("regime", ...)` works; tests pass.  
@@ -102,7 +102,7 @@ Execute in order: S-items → M-items (top-down) → L-items last.
   Files: `financialtools/utils.py`, `financialtools/wrappers.py`  
   Acceptance: `utils.py` has no `yfinance` import at module level; functions accessible from expected location; tests pass.
 
-- [ ] **M6** Convert `DownloaderWrapper` static-only class to module-level functions + shim  
+- [x] **M6** Convert `DownloaderWrapper` static-only class to module-level functions + shim  
   `DownloaderWrapper` uses `__slots__ = ()` and only `@staticmethod` methods — it is a namespace, not an object. Convert to module-level functions; keep a thin shim class for public API compat.  
   Files: `financialtools/wrappers.py`  
   Acceptance: `DownloaderWrapper.download_data` still works; no instances created; tests pass.
@@ -124,9 +124,9 @@ Execute in order: S-items → M-items (top-down) → L-items last.
 | Phase | Total | Done | Remaining |
 |-------|-------|------|-----------|
 | S (Small) | 5 | 5 | 0 |
-| M (Medium) | 6 | 3 | 3 |
+| M (Medium) | 6 | 5 | 1 |
 | L (Large) | 1 | 0 | 1 |
-| **Total** | **12** | **8** | **4** |
+| **Total** | **12** | **10** | **2** |
 
 ---
 
@@ -142,3 +142,5 @@ Execute in order: S-items → M-items (top-down) → L-items last.
 | 2026-04-17 | M1 | Done | `resolve_sector(info_df, fallback) -> str` added to `utils.py`; `import re` added. Both call sites updated (`wrappers.py`, `agents/_tools/data_tools.py`); `import re` removed from both. Exported from `__init__.py`. |
 | 2026-04-17 | M2 | Done | `_SCORE_THRESHOLDS` (dict) and `_INVERSE_METRICS` (frozenset) promoted to class-level constants on `FundamentalMetricsEvaluator`. `_score_metric()` now references `self._SCORE_THRESHOLDS` / `self._INVERSE_METRICS`. Leftover commented `get_metric_category` block also removed. |
 | 2026-04-17 | M3 | Done | `build_weights()` + `list_sectors()` moved to `utils.py` (+ `config` import). `analysis.py` re-exports them via `from financialtools.utils import ...`; `sec_sector_metric_weights` import removed from `analysis.py`. `wrappers.py` deferred import replaced with module-level `from financialtools.utils import build_weights`. All 6 import sites verified unchanged. |
+| 2026-04-17 | M4 | Done | `"regime"` added to `_TOPIC_MAP`; `_build_regime_chain()` deleted from `analysis.py`. `run_topic_analysis()` loop now covers regime automatically. `app.py`: removed `_build_regime_chain` import; added `_DISPLAY_TOPICS` filter; fixed pre-existing `quantitative_overview` gap in `_TOPIC_LABEL`/`_TOPIC_RENDERERS`; Stage 4 uses `_build_topic_chain("regime", llm)`. |
+| 2026-04-17 | M6 | Done | `DownloaderWrapper` class removed; 4 static methods promoted to module-level functions (`_preprocess_df`, `_download_single_ticker`, `_download_multiple_tickers`, `download_data`). `DownloaderWrapper` kept as a 3-line shim: `download_data = staticmethod(download_data)`. All internal `DownloaderWrapper.X` calls replaced with plain `X`. |

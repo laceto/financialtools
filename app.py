@@ -19,13 +19,15 @@ load_dotenv()
 
 from financialtools.analysis import (
     _TOPIC_MAP,
-    _build_regime_chain,
     _build_topic_chain,
     _invoke_chain,
     build_weights,
     filter_year,
     normalise_time,
 )
+
+# Topic keys used for display loops — excludes "regime" which has its own UI section.
+_DISPLAY_TOPICS = [t for t in _TOPIC_MAP if t != "regime"]
 from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
 from financialtools.processor import Downloader, FundamentalMetricsEvaluator
@@ -59,13 +61,14 @@ _RATING_COLOR = {
 }
 
 _TOPIC_LABEL = {
-    "liquidity":     "Liquidity",
-    "solvency":      "Solvency",
-    "profitability": "Profitability",
-    "efficiency":    "Efficiency",
-    "cash_flow":     "Cash Flow",
-    "growth":        "Growth",
-    "red_flags":     "Red Flags",
+    "liquidity":             "Liquidity",
+    "solvency":              "Solvency",
+    "profitability":         "Profitability",
+    "efficiency":            "Efficiency",
+    "cash_flow":             "Cash Flow",
+    "growth":                "Growth",
+    "red_flags":             "Red Flags",
+    "quantitative_overview": "Quantitative",
 }
 
 
@@ -217,14 +220,26 @@ def _render_red_flags(a):
             _show_optional("Quality Concerns", a.quality_concerns)
 
 
+def _render_quantitative_overview(a):
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Overall Rating", a.overall_rating.upper())
+    col2.metric("Composite Trend", a.composite_trend.upper())
+    col3.metric("Ticker", a.ticker)
+    with st.expander("Composite Trend Rationale"):
+        st.markdown(a.composite_trend_rationale)
+    with st.expander("Scoring Profile"):
+        st.markdown(a.scoring_profile)
+
+
 _TOPIC_RENDERERS = {
-    "liquidity":     _render_liquidity,
-    "solvency":      _render_solvency,
-    "profitability": _render_profitability,
-    "efficiency":    _render_efficiency,
-    "cash_flow":     _render_cash_flow,
-    "growth":        _render_growth,
-    "red_flags":     _render_red_flags,
+    "liquidity":             _render_liquidity,
+    "solvency":              _render_solvency,
+    "profitability":         _render_profitability,
+    "efficiency":            _render_efficiency,
+    "cash_flow":             _render_cash_flow,
+    "growth":                _render_growth,
+    "red_flags":             _render_red_flags,
+    "quantitative_overview": _render_quantitative_overview,
 }
 
 
@@ -248,12 +263,12 @@ def _render_results(results: dict):
     """Render the full result panel from session_state['results']."""
     ticker  = results["ticker"]
     regime  = results.get("regime")
-    topics  = {t: results.get(t) for t in _TOPIC_MAP}
+    topics  = {t: results.get(t) for t in _DISPLAY_TOPICS}
 
     # Summary header
     st.subheader(f"Analysis — {ticker}")
     if regime:
-        cols = st.columns(len(_TOPIC_MAP) + 1)
+        cols = st.columns(len(_DISPLAY_TOPICS) + 1)
         for i, (topic, assessment) in enumerate(topics.items()):
             label = _topic_classification(assessment) if assessment else "—"
             color = _RATING_COLOR.get(label, "blue")
@@ -262,11 +277,11 @@ def _render_results(results: dict):
 
     st.divider()
 
-    # Tabs: one per topic + overall
-    tab_labels = [_TOPIC_LABEL[t] for t in _TOPIC_MAP] + ["Overall Regime"]
+    # Tabs: one per topic + overall regime
+    tab_labels = [_TOPIC_LABEL[t] for t in _DISPLAY_TOPICS] + ["Overall Regime"]
     tabs = st.tabs(tab_labels)
 
-    for tab, topic in zip(tabs[:-1], _TOPIC_MAP):
+    for tab, topic in zip(tabs[:-1], _DISPLAY_TOPICS):
         with tab:
             assessment = topics.get(topic)
             if assessment is None:
@@ -351,7 +366,7 @@ if run_btn and ticker:
     st.session_state.pop("results", None)   # clear stale results
 
     results: dict = {"ticker": ticker}
-    total_steps = len(_TOPIC_MAP) + 2  # download+evaluate, 7 topics, 1 regime
+    total_steps = len(_DISPLAY_TOPICS) + 3  # download+evaluate, N topics, 1 regime
 
     with st.status("Running analysis…", expanded=True) as status:
 
@@ -372,8 +387,8 @@ if run_btn and ticker:
 
         progress = st.progress(1 / total_steps, text="Evaluation complete.")
 
-        # Stage 3: 7 topic chains
-        for i, topic in enumerate(_TOPIC_MAP, start=2):
+        # Stage 3: topic chains
+        for i, topic in enumerate(_DISPLAY_TOPICS, start=2):
             label = _TOPIC_LABEL[topic]
             st.write(f"Running **{label}** chain …")
             progress.progress(i / total_steps, text=f"{label} chain …")
@@ -381,10 +396,10 @@ if run_btn and ticker:
             prompt, parser = _build_topic_chain(topic, llm)
             results[topic] = _invoke_chain(prompt, parser, llm, payloads, topic, ticker)
 
-        # Stage 4: regime chain
+        # Stage 4: regime chain (separate UI step — rendered in its own tab)
         st.write("Running **Overall Regime** chain …")
         progress.progress(1.0, text="Overall Regime chain …")
-        regime_prompt, regime_parser = _build_regime_chain(llm)
+        regime_prompt, regime_parser = _build_topic_chain("regime", llm)
         results["regime"] = _invoke_chain(
             regime_prompt, regime_parser, llm, payloads, "regime", ticker
         )
