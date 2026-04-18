@@ -55,11 +55,13 @@ print(result["final_report"])   # long/short conviction report in markdown
 
 | Module | Responsibility |
 |---|---|
-| `processor.py` | `RateLimiter`, `Downloader`, `FundamentalTraderAssistant` |
-| `wrappers.py` | `DownloaderWrapper`, `FundamentalEvaluator`, Excel export/read helpers |
-| `analysis.py` | `run_topic_analysis()` — self-contained pipeline (download → evaluate → 8 LLM chains) returning `TopicAnalysisResult` |
+| `downloader.py` | `Downloader` — yfinance fetch + wide→long reshape; re-exports `RateLimiter` |
+| `evaluator.py` | `FundamentalMetricsEvaluator` — 24 scored metrics, 14 unscored extended metrics, composite scoring, red-flag detection; `_empty_result`, `SCORED_METRICS`, `_EMPTY_RESULT_KEYS` |
+| `processor.py` | Re-export shim — `from financialtools.processor import Downloader, FundamentalMetricsEvaluator` still works |
+| `wrappers.py` | Module-level `download_data()` + parallel helpers; `DownloaderWrapper` (backward-compat shim); `FundamentalEvaluator`; Excel export/read helpers |
+| `analysis.py` | `run_topic_analysis()` — self-contained pipeline (download → evaluate → 9 LLM chains) returning `TopicAnalysisResult`; re-exports `build_weights`, `list_sectors` |
 | `config.py` | Sector weight dicts (single source of truth) |
-| `utils.py` | I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`), yfinance profile helpers |
+| `utils.py` | I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`); `build_weights`, `list_sectors`, `resolve_sector`; `RateLimiter`; yfinance profile helpers |
 | `prompts.py` | `build_prompt()` + `build_topic_prompt()` factories + 13 prompt constants |
 | `pydantic_models.py` | `StockRegimeAssessment` (regime/valuation); 7 topic models (`LiquidityAssessment` … `RedFlagsAssessment`); `ComprehensiveStockAssessment` |
 | `exceptions.py` | `FinancialToolsError`, `DownloadError`, `EvaluationError`, `SectorNotFoundError` |
@@ -74,7 +76,7 @@ print(result["final_report"])   # long/short conviction report in markdown
 
 ## Key classes
 
-### `Downloader` (`processor.py`)
+### `Downloader` (`downloader.py` — also importable from `processor.py`)
 
 ```python
 d = Downloader.from_ticker("AAPL")
@@ -86,18 +88,20 @@ info_df   = d.get_info_data()     # full yfinance info DataFrame (marketCap, for
 `sharesoutstanding` from `_info` across all time periods — no manual merge needed before
 passing to `FundamentalTraderAssistant`.
 
-`from_ticker` raises nothing on failure — returns an empty `Downloader`; `get_merged_data` returns `pd.DataFrame()`.
+`from_ticker` raises `DownloadError` on any yfinance failure — always catch it at the call site. `get_merged_data` returns `pd.DataFrame()` on failure; never raises.
 
-### `FundamentalTraderAssistant` (`processor.py`)
+### `FundamentalMetricsEvaluator` (`evaluator.py` — also importable from `processor.py`)
+
+`FundamentalTraderAssistant` is a deprecated alias — use `FundamentalMetricsEvaluator` in new code.
 
 ```python
-assistant = FundamentalTraderAssistant(data=merged_df, weights=weights_df)
+assistant = FundamentalMetricsEvaluator(data=merged_df, weights=weights_df)
 result = assistant.evaluate()
 # result keys: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
 ```
 
 **Raises** `EvaluationError` if `data` is empty, contains multiple tickers, or has NaN-only ticker column.
-`evaluate()` returns `_empty_result()` (all 6 keys, fresh empty DataFrames) on any internal failure — never raises.
+`evaluate()` also raises `EvaluationError` on any internal failure — callers that need a soft-failure path should catch it and call `_empty_result()` themselves.
 
 `evaluate()` return keys:
 
@@ -154,7 +158,7 @@ print(result.red_flags.severity)      # "none" | "low" | "moderate" | "high"
 print(result.evaluate_output.keys())  # metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
 ```
 
-Runs three stages in one call: download → `FundamentalTraderAssistant.evaluate()` → 8 LLM chains (7 topic models + `StockRegimeAssessment`). No pre-existing Excel files required — data flows directly from yfinance.
+Runs three stages in one call: download → `FundamentalMetricsEvaluator.evaluate()` → 9 LLM chains (8 topic models + `StockRegimeAssessment`). No pre-existing Excel files required — data flows directly from yfinance.
 
 **Does not need `financial_data/`** — unlike `get_stock_evaluation_report`, this pipeline is self-contained.
 

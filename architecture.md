@@ -22,11 +22,13 @@ The Streamlit app (`app.py`) and CLI (`scripts/run_analysis.py`) both use `run_t
 
 | Module | Responsibility |
 |---|---|
-| `processor.py` | `Downloader` (yfinance fetch + wide→long reshape), `FundamentalTraderAssistant` (metric computation, 1-5 scoring, extended unscored metrics, red-flag detection). `RateLimiter` re-exported here for backward compat — implementation is in `utils.py`. |
+| `downloader.py` | `Downloader` — yfinance fetch + wide→long reshape of balance sheet, income statement, cashflow, and info. Re-exports `RateLimiter` for backward compat. |
+| `evaluator.py` | `FundamentalMetricsEvaluator` — metric computation, 1–5 scoring, extended unscored metrics, red-flag detection. Module-level: `_empty_result()`, `_EMPTY_RESULT_KEYS`, `_REQUIRED_METRIC_COLS`, `SCORED_METRICS`. `FundamentalTraderAssistant` is a deprecated alias. |
+| `processor.py` | Re-export shim — re-exports all names from `downloader.py` and `evaluator.py` so existing `from financialtools.processor import …` calls continue to work. New code should import from `downloader` or `evaluator` directly. |
 | `config.py` | Sector-specific metric weight dicts. `sec_sector_metric_weights` (yfinance sectorKey convention, active pipeline). `sector_metric_weights` (legacy title-case, `chains.py` only). `grouped_weights` (legacy grouped display). Three private baseline dicts (`_STD_EXT`, `_FIN_EXT`, `_RE_EXT`) DRY-up the 13 extended-metric keys. No I/O at import time — pure Python dicts. |
-| `utils.py` | `RateLimiter` (thread-safe sliding-window, generic utility). I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`). yfinance profile helpers (`get_ticker_profile`, `enrich_tickers`). |
-| `wrappers.py` | `DownloaderWrapper` (public download API, parallel via `ThreadPoolExecutor`, lazy file-handler logging to `logs/`), `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`), `merge_results`, Excel export/read helpers. |
-| `analysis.py` | `run_topic_analysis(ticker, sector, year, model)` — self-contained pipeline. Returns `TopicAnalysisResult`. `_TOPIC_MAP` is the single source of truth for topic → `(prompt, model_cls)` pairs. Uses `sec_sector_metric_weights` via `build_weights()`. Built-in one-shot fix retry on parse error. Public helpers: `build_weights`, `filter_year`, `normalise_time`. |
+| `utils.py` | `RateLimiter` (thread-safe sliding-window, generic utility). I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`). `build_weights(sector)`, `list_sectors()`, `resolve_sector(info_df, fallback)` — single source of truth for sector-weight lookups. yfinance profile helpers (`get_ticker_profile`, `enrich_tickers`). |
+| `wrappers.py` | Module-level `download_data()` + private helpers (`_download_single_ticker`, `_download_multiple_tickers`, `_preprocess_df`). `DownloaderWrapper` is a backward-compat shim. `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`). File handlers attached lazily on first download — importing `wrappers` does **not** create log files. `merge_results`, Excel export/read helpers. |
+| `analysis.py` | `run_topic_analysis(ticker, sector, year, model)` — self-contained pipeline. Returns `TopicAnalysisResult`. `_TOPIC_MAP` is the single source of truth for all 9 topic → `(prompt, model_cls)` pairs (8 topic models + regime). Re-exports `build_weights`, `list_sectors` from `utils.py`. Public helpers: `filter_year`, `normalise_time`. Built-in one-shot fix retry on parse error. |
 | `pydantic_models.py` | `StockRegimeAssessment` (original, backward-compatible). Seven topic models: `LiquidityAssessment`, `SolvencyAssessment`, `ProfitabilityAssessment`, `EfficiencyAssessment`, `CashFlowAssessment`, `GrowthAssessment`, `RedFlagsAssessment`. `ComprehensiveStockAssessment` wraps all. All Pydantic v2; use `.model_dump()`. |
 | `prompts.py` | Two factories: `build_prompt(...)` for `StockRegimeAssessment` variants; `build_topic_prompt(topic)` for seven topic models. Shared metric-definition blocks are the single source of truth for metric descriptions. |
 | `exceptions.py` | `FinancialToolsError` (base), `DownloadError`, `EvaluationError`, `SectorNotFoundError` (also a `ValueError`). |
@@ -56,7 +58,7 @@ Ticker → Downloader.from_ticker() → yfinance
 
 **Evaluate:**
 ```
-merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises EvaluationError on bad input
+merged_df + weights → FundamentalMetricsEvaluator(data, weights)  # raises EvaluationError on bad input
   → evaluate()
       → compute_metrics()              # produces 24 scored metric columns + sector
       → compute_valuation_metrics()    # P/E, P/B, P/FCF, EarningsYield → self.eval_metrics
@@ -68,7 +70,7 @@ merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises Eval
       → metrics_red_flags(m_long)      # → self.red_flags (returns copy — does not mutate input)
       → compute_extended_metrics()     # 14 unscored metrics
       → returns dict: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
-      → on any failure: returns _empty_result() (all keys, empty DataFrames) + logs error
+      → on failure: raises EvaluationError (callers needing soft-failure should catch + call _empty_result())
 ```
 
 **Score attribute schema — do not conflate:**
@@ -78,14 +80,13 @@ merged_df + weights → FundamentalTraderAssistant(data, weights)  # raises Eval
 **Topic analysis (self-contained):**
 ```
 run_topic_analysis(ticker, sector, year?, model?) → TopicAnalysisResult
-  → Downloader.from_ticker(ticker).get_merged_data()   # raises EvaluationError if empty
-  → build_weights(sector)                               # falls back to "Default" with warning
-  → FundamentalTraderAssistant(merged, weights).evaluate()
+  → Downloader.from_ticker(ticker).get_merged_data()      # raises EvaluationError if empty
+  → build_weights(sector)                                  # falls back to "default" with warning
+  → FundamentalMetricsEvaluator(merged, weights).evaluate()
   → normalise_time() + filter_year() per DataFrame
   → dataframe_to_json() × 5
-  → for topic in _TOPIC_MAP:
+  → for topic in _TOPIC_MAP:   # 9 entries: 8 topic models + regime
       _invoke_chain(...) → topic assessment | None  [one fix retry on parse failure]
-  → _build_regime_chain(llm) → regime assessment | None
   → TopicAnalysisResult(ticker, sector, year, liquidity, solvency, …, regime, evaluate_output)
 ```
 
