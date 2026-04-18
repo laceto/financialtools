@@ -48,7 +48,7 @@ START ──► prepare_data ──┬──► liquidity_analyst             �
 
 3. prepare_data node  → calls _download_and_evaluate(ticker, sector, year)
    │   → Downloader.from_ticker("AAPL").get_merged_data()
-   │   → FundamentalTraderAssistant.evaluate()  [24 scored + 14 unscored metrics]
+   │   → FundamentalMetricsEvaluator.evaluate()  [24 scored + 14 unscored metrics]
    │   → normalise_time + filter_year
    │   → writes agents/.cache/AAPL_2023/payloads.json  ← observability side-effect
    │   → state ← {cache_key, company_name, resolved_sector,
@@ -154,7 +154,7 @@ class AnalysisState(TypedDict, total=False):
     company_name:    str      # lowercased longName, e.g. "apple inc."
     resolved_sector: str      # final sector used (auto-detected or caller-supplied)
     # After prepare_data — data payloads (primary channel to topic subgraphs)
-    metrics_json:           str   # FundamentalTraderAssistant scored metrics
+    metrics_json:           str   # FundamentalMetricsEvaluator scored metrics
     extended_metrics_json:  str   # unscored / quality metrics
     eval_metrics_json:      str   # per-metric scores and flags
     composite_scores_json:  str   # weighted composite scores per period
@@ -216,7 +216,7 @@ function called directly by `prepare_data_node`.  It raises on failure.
 |---|---|
 | 1. Download | `Downloader.from_ticker(ticker).get_merged_data()` |
 | 1b. Enrich | `longName` → `company_name`; `sector` auto-detected from `sectorKey` if not supplied |
-| 2. Evaluate | `FundamentalTraderAssistant.evaluate()` — 24 scored + 14 unscored metrics |
+| 2. Evaluate | `FundamentalMetricsEvaluator.evaluate()` — 24 scored + 14 unscored metrics |
 | 3. Normalise | `_normalise_time()` + `_filter_year()` per DataFrame |
 | 4. Cache | `write_payloads(cache_key, {...})` → `agents/.cache/{KEY}/payloads.json` (side-effect) |
 

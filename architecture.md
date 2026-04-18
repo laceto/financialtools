@@ -86,7 +86,7 @@ run_topic_analysis(ticker, sector, year?, model?) → TopicAnalysisResult
   → normalise_time() + filter_year() per DataFrame
   → dataframe_to_json() × 5
   → for topic in _TOPIC_MAP:   # 9 entries: 8 topic models + regime
-      _invoke_chain(...) → topic assessment | None  [one fix retry on parse failure]
+      invoke_chain(...) → topic assessment | None  [one fix retry on parse failure]
   → TopicAnalysisResult(ticker, sector, year, liquidity, solvency, …, regime, evaluate_output)
 ```
 
@@ -105,7 +105,7 @@ create_financial_manager(model, checkpointer) → CompiledStateGraph
 agent.invoke({"ticker": "AAPL", "year": 2023}, config=...)
   → set_model node          → injects model into AnalysisState
   → prepare_data_node       → prepare_financial_data(ticker, sector?, year?)
-      → Downloader + FundamentalTraderAssistant.evaluate()
+      → Downloader + FundamentalMetricsEvaluator.evaluate()
       → auto-detects sector from get_info_data()["sector"] (sec_sector_metric_weights convention)
       → auto-detects company_name from get_info_data()["longName"]
       → writes agents/.cache/{KEY}/payloads.json

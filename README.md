@@ -328,7 +328,7 @@ LANGSMITH_PROJECT=financialtools   # optional, defaults to "default"
 python -m unittest discover -s tests
 ```
 
-32 unit tests in `tests/test_processor.py` — all offline (no network, no `.env` required).
+40 unit tests in `tests/test_processor.py` — all offline (no network, no `.env` required).
 
 ## License
 

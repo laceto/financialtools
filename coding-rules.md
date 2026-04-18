@@ -56,13 +56,13 @@ NOT fed into composite scores — time-differential (`pct_change`) or lack unive
 from financialtools.exceptions import SectorNotFoundError, EvaluationError, DownloadError
 ```
 
-- `EvaluationError` — raised by `FundamentalTraderAssistant.__init__` on empty data, multi-ticker input, NaN tickers, or bad weights. Also raised by `run_topic_analysis()` when download returns empty DataFrame.
+- `EvaluationError` — raised by `FundamentalMetricsEvaluator.__init__` on empty data, multi-ticker input, NaN tickers, or bad weights. Also raised by `run_topic_analysis()` when download returns empty DataFrame.
 - `SectorNotFoundError` — raised by `chains.get_stock_evaluation_report` if sector missing from benchmark files. Inherits `ValueError`.
 - `DownloadError` — reserved for download-layer failures; not yet raised at call sites.
 
 ## Logging
 
-All modules use `logging.getLogger(__name__)`. `wrappers.py` is the **only** module that configures handlers. The `_logger` in `processor.py` is defined at file top, before all class bodies. Do not add handlers in other modules.
+All modules use `logging.getLogger(__name__)`. `wrappers.py` is the **only** module that configures handlers. Module-level `_logger` instances are defined at file top in `downloader.py` and `evaluator.py` (the implementation modules). Do not add handlers in other modules.
 
 ---
 

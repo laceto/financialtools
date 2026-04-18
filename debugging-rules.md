@@ -21,10 +21,10 @@ Log path is anchored to `wrappers.py`'s `__file__` — if logs appear in the wro
 | Symptom | Cause | Where to look / fix |
 |---|---|---|
 | Empty `composite_scores` DataFrame | `evaluate()` failed silently | `logs/error.log` — search `evaluate() failed` or `compute_valuation_metrics failed` |
-| `EvaluationError` on `FundamentalTraderAssistant` | `data` has empty/multi/NaN ticker, or `weights` has empty/multi/NaN sector | Inspect input DataFrame before constructing `FundamentalTraderAssistant` |
+| `EvaluationError` on `FundamentalMetricsEvaluator` | `data` has empty/multi/NaN ticker, or `weights` has empty/multi/NaN sector | Inspect input DataFrame before constructing `FundamentalMetricsEvaluator` |
 | `SectorNotFoundError` | Sector missing from benchmark Excel | Check `financial_data/metrics_by_sectors.xlsx` |
 | Extended-metric columns all NaN | Optional source column absent for ticker (e.g. `inventory`, `invested_capital`, `ebit`) | Logged as WARNING, not error — expected for some tickers |
-| `"extended_metrics"` key missing from `evaluate()` result | `_EMPTY_RESULT_KEYS` not updated | Add `"extended_metrics"` to `_EMPTY_RESULT_KEYS` in `processor.py` |
+| `"extended_metrics"` key missing from `evaluate()` result | `_EMPTY_RESULT_KEYS` not updated | Add `"extended_metrics"` to `_EMPTY_RESULT_KEYS` in `evaluator.py` |
 | Growth rates in wrong order | `time` column not sortable | `compute_extended_metrics()` sorts by `time` before `pct_change()` — verify `time` values are parseable strings or timestamps |
 | LLM returns unexpected output in `chains.py` | `PydanticOutputParser` used directly, no auto-fix | Check raw LLM response in `logs/debug.log` |
 | `TopicAnalysisResult` field is `None` | Both primary parse and fix-retry failed in `_invoke_chain` | `logs/` — search WARNING for the topic name. Field is `None` and run continues — not fatal |
