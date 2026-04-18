@@ -61,7 +61,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from financialtools.config import sec_sector_metric_weights
 from financialtools.exceptions import EvaluationError
 from financialtools.processor import Downloader, FundamentalMetricsEvaluator
 from financialtools.pydantic_models import (
@@ -106,19 +105,10 @@ _TOPIC_MAP: dict[str, tuple[str, type]] = {
     "quantitative_overview":  (system_prompt_quantitative_overview, QuantitativeOverviewAssessment),
 }
 
-# Human message template shared by all topic chains.
+# Human message template shared by all topic chains and the regime chain.
 # The five JSON blocks are the same for every topic — the system prompt
 # controls which fields the LLM focuses on.
 _TOPIC_HUMAN_TEMPLATE = (
-    "Metrics:\n{metrics}\n"
-    "Extended Metrics:\n{extended_metrics}\n"
-    "Scores:\n{composite_scores}\n"
-    "Evaluation Metrics:\n{eval_metrics}\n"
-    "RedFlags:\n{red_flags}"
-)
-
-# Human message template for the overall regime chain.
-_REGIME_HUMAN_TEMPLATE = (
     "Metrics:\n{metrics}\n"
     "Extended Metrics:\n{extended_metrics}\n"
     "Scores:\n{composite_scores}\n"
@@ -216,46 +206,11 @@ class TopicAnalysisResult:
 
 
 # ---------------------------------------------------------------------------
-# Public helpers (promoted from private in S5 fix — see code-review-report.md)
+# Public helpers — implementations live in utils.py (no LLM dependency).
+# Re-exported here for backward compatibility with existing callers.
 # ---------------------------------------------------------------------------
 
-def build_weights(sector: str) -> pd.DataFrame:
-    """
-    Build a weights DataFrame for the given sector.
-
-    Uses sec_sector_metric_weights (yfinance sectorKey convention, e.g. "technology").
-    Falls back to 'Default' if sector is not found.
-
-    Returns
-    -------
-    pd.DataFrame with columns: sector, metrics, weights.
-    """
-    if sector in sec_sector_metric_weights:
-        sector_weights_dict = sec_sector_metric_weights[sector]
-    else:
-        _logger.warning(
-            "Sector '%s' not found in sec_sector_metric_weights — using 'default'. "
-            "Valid sectors: %s",
-            sector,
-            sorted(sec_sector_metric_weights.keys()),
-        )
-        sector_weights_dict = sec_sector_metric_weights["default"]
-
-    # Build the weights DataFrame from the canonical sector config — single source of truth.
-    return pd.DataFrame({
-        "sector":  sector,
-        "metrics": list(sector_weights_dict.keys()),
-        "weights": list(sector_weights_dict.values()),
-    })
-
-
-def list_sectors() -> list[str]:
-    """Return all valid sector names accepted by build_weights() and run_topic_analysis().
-
-    Uses yfinance sectorKey convention (lowercase, hyphenated), e.g. "technology",
-    "financial-services". "default" is always present as a fallback.
-    """
-    return sorted(sec_sector_metric_weights.keys())
+from financialtools.utils import build_weights, list_sectors  # noqa: E402 (re-export)
 
 
 def normalise_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -339,15 +294,9 @@ def _build_regime_chain(llm: ChatOpenAI):
     Uses system_prompt_StockRegimeAssessment_extended so the LLM sees
     all 24 scored + 14 extended unscored metrics.
     """
-    parser = PydanticOutputParser(pydantic_object=StockRegimeAssessment)
-    system_filled = system_prompt_StockRegimeAssessment_extended.format(
-        format_instructions=parser.get_format_instructions()
+    return _build_chain_parts(
+        system_prompt_StockRegimeAssessment_extended, StockRegimeAssessment, llm
     )
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_filled),
-        ("human", _REGIME_HUMAN_TEMPLATE),
-    ])
-    return prompt, parser
 
 
 def invoke_chain(prompt, parser, llm, inputs: dict, topic: str, ticker: str):

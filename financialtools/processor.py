@@ -84,7 +84,6 @@ class Downloader:
             #                                case=True, na=False)]
             df_info.insert(0, "ticker", ticker)
             df_info = df_info.pivot(index=["ticker"], columns='key', values='value').reset_index()
-            # df_info = df_info.pivot(index=["ticker"], columns='key', values='value')
             d._info = df_info
 
             return d
@@ -92,16 +91,6 @@ class Downloader:
         except Exception as e:
             _logger.error(f"[{ticker}] from_ticker failed: {e}", exc_info=True)
             raise DownloadError(f"[{ticker}] download failed: {e}") from e
-            
-    # @staticmethod
-    # def __format_fin_data(ticker: str, data_type: str, df: pd.DataFrame) -> pd.DataFrame:
-    #     if df is None or df.empty:
-    #         return pd.DataFrame()
-    #     df = df.reset_index()
-    #     df["ticker"] = ticker
-    #     df["docs"] = data_type
-    #     return df
-
 
     @staticmethod
     def __reshape_fin_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -127,7 +116,7 @@ class Downloader:
             df.columns = [col.replace(' ', '_').lower() for col in df.columns]
             return df
         except Exception as e:
-            print(f"Error reshaping financial data: {e}")
+            _logger.error("Error reshaping financial data: %s", e, exc_info=True)
             return pd.DataFrame()
     
     def get_info_data(self) -> pd.DataFrame:
@@ -200,7 +189,7 @@ class Downloader:
                 if not df.empty:
                     dfs.append(df)
                 else:
-                    print(f"No merged data for {d.ticker}")
+                    _logger.warning("No merged data for %s", d.ticker)
 
             if not dfs:
                 return pd.DataFrame()
@@ -227,7 +216,7 @@ class Downloader:
                 if not df.empty:
                     dfs.append(df)
                 else:
-                    print(f"No merged data for {d.ticker}")
+                    _logger.warning("No info data for %s", d.ticker)
 
             if not dfs:
                 return pd.DataFrame()
@@ -279,15 +268,7 @@ class Downloader:
                     except Exception as e:
                         _logger.error(f"[{t}] Parquet write failed for '{name}': {e}")
 
-                # Optional JSON save block
-                # try:
-                #     if d._info:
-                #         info_path = os.path.join(out_dir, f"{t}_info.json")
-                #         pd.Series(d._info).to_json(info_path, indent=2)
-                # except:
-                #     pass
-
-                print(f"Saved {t} data to {out_dir}")
+                _logger.info("[%s] Saved data to %s", t, out_dir)
                 yield d
 
             except Exception as e:
@@ -587,71 +568,69 @@ class FundamentalMetricsEvaluator:
             _logger.error(f"[{self.ticker}] compute_metrics failed: {e}", exc_info=True)
             return pd.DataFrame()
 
+    # Scoring thresholds — class constant, not rebuilt per call.
+    # Four boundary values per metric map to scores 1–5 via np.digitize.
+    _SCORE_THRESHOLDS: dict = {
+        # Original 11
+        "GrossMargin":         [0.2, 0.3, 0.4, 0.5],
+        "OperatingMargin":     [0.05, 0.1, 0.15, 0.2],
+        "NetProfitMargin":     [0.03, 0.07, 0.12, 0.2],
+        "EBITDAMargin":        [0.1, 0.2, 0.3, 0.4],
+        "ROA":                 [0.02, 0.05, 0.08, 0.12],
+        "ROE":                 [0.05, 0.1, 0.15, 0.2],
+        "FCFToRevenue":        [0.02, 0.05, 0.1, 0.2],
+        "FCFYield":            [0.02, 0.04, 0.06, 0.1],
+        "DebtToEquity":        [0.5, 1.0, 1.5, 2.0],   # inverse: lower is better
+        "CurrentRatio":        [1.0, 1.2, 1.5, 2.0],
+        "FCFtoDebt":           [0.05, 0.1, 0.2, 0.3],
+        # Liquidity (extended)
+        "QuickRatio":          [0.5, 0.8, 1.0, 1.5],
+        "CashRatio":           [0.1, 0.2, 0.5, 1.0],
+        "WorkingCapitalRatio": [0.05, 0.1, 0.2, 0.3],
+        # Solvency (extended)
+        "DebtRatio":           [0.2, 0.4, 0.6, 0.8],   # inverse: lower is better
+        "EquityRatio":         [0.2, 0.4, 0.6, 0.8],
+        "NetDebtToEBITDA":     [1.0, 2.0, 3.0, 5.0],   # inverse: lower is better
+        "InterestCoverage":    [1.5, 3.0, 5.0, 10.0],
+        # Returns (extended)
+        "ROIC":                [0.05, 0.1, 0.15, 0.2],
+        # Efficiency (extended)
+        "AssetTurnover":       [0.3, 0.6, 1.0, 1.5],
+        # Cash Flow (extended)
+        "OCFRatio":            [0.1, 0.2, 0.4, 0.6],
+        "FCFMargin":           [0.02, 0.05, 0.1, 0.2],
+        "CashConversion":      [0.5, 0.8, 1.0, 1.2],
+        "CapexRatio":          [0.1, 0.2, 0.4, 0.6],   # inverse: lower is better
+    }
+
+    # Metrics where a lower value is better — score is inverted via 6 - score.
+    _INVERSE_METRICS: frozenset = frozenset(
+        {"DebtToEquity", "DebtRatio", "NetDebtToEBITDA", "CapexRatio"}
+    )
+
     def _score_metric(self, df):
         """
         Apply trader-friendly scoring rules to a DataFrame with 'metrics' and 'value' columns.
 
         Returns a new DataFrame — does not mutate the input.
+        Uses class-level _SCORE_THRESHOLDS and _INVERSE_METRICS constants.
         """
         df = df.copy()
-        thresholds = {
-            # Original 11
-            "GrossMargin":         [0.2, 0.3, 0.4, 0.5],
-            "OperatingMargin":     [0.05, 0.1, 0.15, 0.2],
-            "NetProfitMargin":     [0.03, 0.07, 0.12, 0.2],
-            "EBITDAMargin":        [0.1, 0.2, 0.3, 0.4],
-            "ROA":                 [0.02, 0.05, 0.08, 0.12],
-            "ROE":                 [0.05, 0.1, 0.15, 0.2],
-            "FCFToRevenue":        [0.02, 0.05, 0.1, 0.2],
-            "FCFYield":            [0.02, 0.04, 0.06, 0.1],
-            "DebtToEquity":        [0.5, 1.0, 1.5, 2.0],   # inverse: lower is better
-            "CurrentRatio":        [1.0, 1.2, 1.5, 2.0],
-            "FCFtoDebt":           [0.05, 0.1, 0.2, 0.3],
-            # Liquidity (extended)
-            "QuickRatio":          [0.5, 0.8, 1.0, 1.5],
-            "CashRatio":           [0.1, 0.2, 0.5, 1.0],
-            "WorkingCapitalRatio": [0.05, 0.1, 0.2, 0.3],
-            # Solvency (extended)
-            "DebtRatio":           [0.2, 0.4, 0.6, 0.8],   # inverse: lower is better
-            "EquityRatio":         [0.2, 0.4, 0.6, 0.8],
-            "NetDebtToEBITDA":     [1.0, 2.0, 3.0, 5.0],   # inverse: lower is better
-            "InterestCoverage":    [1.5, 3.0, 5.0, 10.0],
-            # Returns (extended)
-            "ROIC":                [0.05, 0.1, 0.15, 0.2],
-            # Efficiency (extended)
-            "AssetTurnover":       [0.3, 0.6, 1.0, 1.5],
-            # Cash Flow (extended)
-            "OCFRatio":            [0.1, 0.2, 0.4, 0.6],
-            "FCFMargin":           [0.02, 0.05, 0.1, 0.2],
-            "CashConversion":      [0.5, 0.8, 1.0, 1.2],
-            "CapexRatio":          [0.1, 0.2, 0.4, 0.6],   # inverse: lower is better
-        }
-
-        # Metrics where a lower value is better: raw digitize score is inverted via 6 - score.
-        _INVERSE_METRICS = frozenset(
-            {"DebtToEquity", "DebtRatio", "NetDebtToEBITDA", "CapexRatio"}
-        )
 
         def score_row(row):
             name, value = row['metrics'], row['value']
             if pd.isna(value):
                 return 3
-            if name in thresholds:
-                score = np.digitize(value, thresholds[name]) + 1
-                if name in _INVERSE_METRICS:
+            if name in self._SCORE_THRESHOLDS:
+                score = np.digitize(value, self._SCORE_THRESHOLDS[name]) + 1
+                if name in self._INVERSE_METRICS:
                     return 6 - score  # inverse: high raw value → low score
                 return score
             return 3
 
         df['score'] = df.apply(score_row, axis=1)
         return df
-    
-    # def get_metric_category(self, metric):
-    #     for category, metrics in self.weights.items():
-    #         if metric in metrics:
-    #             return category
-    #     return "Uncategorized"
-    
+
     def compute_scores(self):
         try:
             if self.metrics is None or self.metrics.empty:

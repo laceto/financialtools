@@ -1,10 +1,8 @@
-import re
 import time
 import pandas as pd
-import polars as pl
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from financialtools.utils import export_to_xlsx
+from financialtools.utils import build_weights, export_to_xlsx, resolve_sector
 from financialtools.processor import Downloader, FundamentalMetricsEvaluator, _empty_result
 from financialtools.exceptions import DownloadError
 
@@ -85,15 +83,13 @@ class DownloaderWrapper:
             pd.DataFrame: Preprocessed DataFrame
         """
         try:
-            return (
-                pl.from_pandas(df)
-                .with_columns(pl.col("time").dt.year().alias("time"))
-                .select([col for col in df.columns if col != "time"] + ["time"])
-                .to_pandas()
-            )
+            out = df.copy()
+            out["time"] = pd.to_datetime(out["time"]).dt.year
+            cols = [c for c in df.columns if c != "time"] + ["time"]
+            return out[cols]
         except Exception as e:
-            print(f"Error preprocessing data: {e}")
-            return pd.DataFrame()  # Return empty DataFrame on failure
+            logger.error("Error preprocessing data: %s", e, exc_info=True)
+            return pd.DataFrame()
     
     @staticmethod
     def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
@@ -128,12 +124,7 @@ class DownloaderWrapper:
                 logger.warning(f"[{ticker}] longName not found in info; using ticker as name")
 
             # ── Enrich: sector ───────────────────────────────────────────────
-            if not info_df.empty and "sector" in info_df.columns:
-                raw = info_df["sector"].str.lower().to_string(index=False)
-                sector = re.sub(r" ", "-", raw.strip())
-            else:
-                sector = "default"
-                logger.warning(f"[{ticker}] sector not found in info; using 'default'")
+            sector = resolve_sector(info_df)
 
             merged_data["company_name"] = company_name
             merged_data["sector"] = sector
@@ -271,9 +262,8 @@ class FundamentalEvaluator:
         if weights is not None and sector is not None:
             raise ValueError("Provide only one of 'weights' or 'sector', not both.")
 
-        from financialtools.analysis import build_weights as _build_weights
         self.df = df
-        self.weights = weights if weights is not None else _build_weights(sector)
+        self.weights = weights if weights is not None else build_weights(sector)
 
     def evaluate_single(self, ticker: str) -> dict:
         """
@@ -362,7 +352,7 @@ def merge_results(results: dict, key: str) -> pd.DataFrame:
         ]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     except Exception as e:
-        print(f"Error merging results for key '{key}': {e}")
+        logger.error("Error merging results for key %r: %s", key, e, exc_info=True)
         return pd.DataFrame()
     
 
@@ -396,7 +386,7 @@ def export_financial_results(results, output_dir="financial_data", sheet_name="s
                 sheet_name=sheet_name
             )
         except Exception as e:
-            print(f"Failed to export '{key}': {e}")
+            logger.error("Failed to export %r: %s", key, e, exc_info=True)
 
 
 def read_financial_results(ticker=None, time=None, input_dir="financial_data", sheet_name="sheet1"):
@@ -425,7 +415,7 @@ def read_financial_results(ticker=None, time=None, input_dir="financial_data", s
 
             return df
         except Exception as e:
-            print(f"Error reading {filename}: {e}")
+            logger.error("Error reading %s: %s", filename, e, exc_info=True)
             return pd.DataFrame()
 
     metrics = read_and_filter("metrics")

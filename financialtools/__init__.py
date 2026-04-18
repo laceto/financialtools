@@ -31,7 +31,7 @@ from financialtools.processor import (
     FundamentalTraderAssistant,  # deprecated alias — use FundamentalMetricsEvaluator
     _empty_result as empty_evaluate_result,
 )
-from financialtools.utils import RateLimiter
+from financialtools.utils import RateLimiter, resolve_sector
 from financialtools.wrappers import (
     DownloaderWrapper,
     FundamentalEvaluator,
@@ -66,4 +66,6 @@ __all__ = [
     "empty_evaluate_result",
     # threading utility
     "RateLimiter",
+    # data utilities
+    "resolve_sector",
 ]

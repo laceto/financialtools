@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 
 import pandas as pd
 from langchain_core.tools import tool
@@ -41,7 +40,7 @@ from financialtools.analysis import (
 )
 from financialtools.exceptions import DownloadError, EvaluationError
 from financialtools.processor import Downloader, FundamentalMetricsEvaluator
-from financialtools.utils import dataframe_to_json
+from financialtools.utils import dataframe_to_json, resolve_sector
 
 _logger = logging.getLogger(__name__)
 
@@ -132,13 +131,8 @@ def _download_and_evaluate(
         _logger.warning("[_download_and_evaluate] longName not found in info; using ticker as name")
 
     if sector is None:
-        if not info_df.empty and "sector" in info_df.columns:
-            raw = info_df["sector"].str.lower().to_string(index=False)
-            sector = re.sub(r" ", "-", raw.strip())
-            _logger.info("[_download_and_evaluate] sector auto-detected → %s", sector)
-        else:
-            sector = "default"
-            _logger.warning("[_download_and_evaluate] sector not found in info; using 'default'")
+        sector = resolve_sector(info_df)
+        _logger.info("[_download_and_evaluate] sector auto-detected → %s", sector)
 
     # ── Stage 2: Evaluate ────────────────────────────────────────────────────
     weights = build_weights(sector)

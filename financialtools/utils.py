@@ -1,8 +1,14 @@
 import json
+import logging
+import re
 import threading
 import time
 
 import pandas as pd
+
+from financialtools.config import sec_sector_metric_weights
+
+_logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -81,9 +87,9 @@ def export_to_csv(df, path):
     """Export a DataFrame to a CSV file."""
     try:
         df.to_csv(path, index=False)
-        print(f"Data exported to {path}")
+        _logger.info("Data exported to %s", path)
     except Exception as e:
-        print(f"Error exporting to CSV: {e}")
+        _logger.error("Error exporting to CSV %s: %s", path, e, exc_info=True)
 
 
 def export_to_xlsx(df, path, sheet_name):
@@ -91,9 +97,9 @@ def export_to_xlsx(df, path, sheet_name):
     try:
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name=sheet_name, index=False)
-        print(f"Data exported to {path}")
+        _logger.info("Data exported to %s", path)
     except Exception as e:
-        print(f"Error exporting to Excel: {e}")
+        _logger.error("Error exporting to Excel %s: %s", path, e, exc_info=True)
 
 
 def dataframe_to_json(df):
@@ -113,6 +119,54 @@ def dataframe_to_json(df):
     json_str = json.dumps(df_dict)
 
     return json_str
+
+
+def build_weights(sector: str) -> pd.DataFrame:
+    """Build a weights DataFrame for the given sector.
+
+    Uses sec_sector_metric_weights (yfinance sectorKey convention, e.g. "technology").
+    Falls back to 'default' if sector is not found.
+
+    Returns pd.DataFrame with columns: sector, metrics, weights.
+    """
+    if sector in sec_sector_metric_weights:
+        sector_weights_dict = sec_sector_metric_weights[sector]
+    else:
+        _logger.warning(
+            "Sector '%s' not found in sec_sector_metric_weights — using 'default'. "
+            "Valid sectors: %s",
+            sector,
+            sorted(sec_sector_metric_weights.keys()),
+        )
+        sector_weights_dict = sec_sector_metric_weights["default"]
+    return pd.DataFrame({
+        "sector":  sector,
+        "metrics": list(sector_weights_dict.keys()),
+        "weights": list(sector_weights_dict.values()),
+    })
+
+
+def list_sectors() -> list[str]:
+    """Return all valid sector names accepted by build_weights().
+
+    Uses yfinance sectorKey convention (lowercase, hyphenated), e.g. "technology",
+    "financial-services". "default" is always present as a fallback.
+    """
+    return sorted(sec_sector_metric_weights.keys())
+
+
+def resolve_sector(info_df: pd.DataFrame, fallback: str = "default") -> str:
+    """Derive a sec_sector_metric_weights key from a yfinance info DataFrame.
+
+    Lowercases the sector value and replaces spaces with dashes to match
+    the yfinance sectorKey convention (e.g. "financial-services").
+    Falls back to ``fallback`` with a warning when the sector column is absent.
+    """
+    if not info_df.empty and "sector" in info_df.columns:
+        raw = info_df["sector"].str.lower().to_string(index=False)
+        return re.sub(r" ", "-", raw.strip())
+    _logger.warning("sector not found in info_df — using %r", fallback)
+    return fallback
 
 
 def flatten_weights(weights: dict) -> dict:
@@ -142,7 +196,7 @@ def flatten_weights(weights: dict) -> dict:
                 flat[key] = value
         return flat
     except Exception as e:
-        print(f"Error flattening weights: {e}")
+        _logger.error("Error flattening weights: %s", e, exc_info=True)
         return {}
 
 
@@ -189,7 +243,7 @@ def enrich_tickers(df: pd.DataFrame, ticker_column: str = "ticker") -> pd.DataFr
             profile_df["ticker"] = ticker  # Add ticker for traceability
             profiles.append(profile_df)
         except Exception as e:
-            print(f"Error fetching data for {ticker}: {e}")
+            _logger.error("Error fetching data for %s: %s", ticker, e, exc_info=True)
         time.sleep(0.5)  # Pause to avoid overwhelming the API
 
     return pd.concat(profiles, ignore_index=True)
