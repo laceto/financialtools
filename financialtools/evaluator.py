@@ -130,12 +130,14 @@ class FundamentalMetricsEvaluator:
             )
         self.sector = sectors[0]
 
-    def safe_div(self, num, den):
+    def safe_div(self, num, den) -> np.ndarray:
         try:
+            num = pd.Series(num) if not isinstance(num, pd.Series) else num
+            den = pd.Series(den) if not isinstance(den, pd.Series) else den
             return np.where((den != 0) & (den.notna()) & (num.notna()), num / den, np.nan)
         except Exception as e:
             _logger.error(f"[{self.ticker}] safe_div failed: {e}", exc_info=True)
-            return pd.Series([np.nan] * len(num))
+            return np.full(len(num), np.nan)
 
     def compute_valuation_metrics(self):
         try:

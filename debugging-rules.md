@@ -29,6 +29,10 @@ Log path is anchored to `wrappers.py`'s `__file__` — if logs appear in the wro
 | LLM returns unexpected output in `chains.py` | `PydanticOutputParser` used directly, no auto-fix | Check raw LLM response in `logs/debug.log` |
 | `TopicAnalysisResult` field is `None` | Both primary parse and fix-retry failed in `_invoke_chain` | `logs/` — search WARNING for the topic name. Field is `None` and run continues — not fatal |
 | `ModuleNotFoundError: langchain.output_parsers` | `OutputFixingParser` removed — use `PydanticOutputParser` directly | `from langchain_core.output_parsers import PydanticOutputParser`; retry logic is in `_invoke_chain()` |
+| Sector scores use `"default"` weights unexpectedly | `resolve_sector()` received multi-row `info_df`; `.to_string()` produced newline string that didn't match any key — **fixed 2026-04-18** | Check `logs/` for warning `"Sector '...' not found"` containing `\n` in the sector value |
+| `enrich_tickers()` raises `ValueError: No objects to concatenate` | All `get_ticker_profile()` calls failed; `pd.concat([])` crashed — **fixed 2026-04-18** | Check `logs/error.log` for per-ticker errors; function now returns empty DataFrame instead of crashing |
+| `run_topic_analysis` raises `ValueError` when serialising metrics | `dataframe_to_json` choked on NaN/Inf values present in metrics for banks or foreign tickers — **fixed 2026-04-18** | `logs/error.log`; metrics DataFrame contains NaN — expected for tickers with missing columns |
+| `company_name` column contains `\n` in output data | `_download_single_ticker` used `.to_string()` on multi-row `longName` column — **fixed 2026-04-18** | Rebuild affected rows; check if `get_info_data()` returns more than one row for the ticker |
 
 ---
 

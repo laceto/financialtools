@@ -115,10 +115,12 @@ def dataframe_to_json(df):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Input must be a pandas DataFrame.")
 
-    df_dict = df.to_dict(orient='records')
-    json_str = json.dumps(df_dict)
-
-    return json_str
+    # Replace Inf/-Inf with None, then NaN with None so json.dumps never
+    # encounters bare float('nan') or float('inf'), which are not valid JSON.
+    df_clean = df.replace([float('inf'), float('-inf')], None)
+    df_clean = df_clean.where(df_clean.notna(), other=None)
+    df_dict = df_clean.to_dict(orient='records')
+    return json.dumps(df_dict)
 
 
 def build_weights(sector: str) -> pd.DataFrame:
@@ -163,7 +165,7 @@ def resolve_sector(info_df: pd.DataFrame, fallback: str = "default") -> str:
     Falls back to ``fallback`` with a warning when the sector column is absent.
     """
     if not info_df.empty and "sector" in info_df.columns:
-        raw = info_df["sector"].str.lower().to_string(index=False)
+        raw = info_df["sector"].iloc[0].lower()
         return re.sub(r" ", "-", raw.strip())
     _logger.warning("sector not found in info_df — using %r", fallback)
     return fallback
@@ -246,4 +248,7 @@ def enrich_tickers(df: pd.DataFrame, ticker_column: str = "ticker") -> pd.DataFr
             _logger.error("Error fetching data for %s: %s", ticker, e, exc_info=True)
         time.sleep(0.5)  # Pause to avoid overwhelming the API
 
+    if not profiles:
+        _logger.warning("enrich_tickers: no profiles fetched — returning empty DataFrame")
+        return pd.DataFrame()
     return pd.concat(profiles, ignore_index=True)

@@ -94,7 +94,7 @@ def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
 
         info_df = processor.get_info_data()
         if not info_df.empty and "longName" in info_df.columns:
-            company_name = info_df["longName"].str.lower().to_string(index=False).strip()
+            company_name = info_df["longName"].iloc[0].lower().strip()
         else:
             company_name = ticker.lower()
             logger.warning(f"[{ticker}] longName not found in info; using ticker as name")

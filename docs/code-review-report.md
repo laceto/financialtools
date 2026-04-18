@@ -167,6 +167,41 @@ Usage: `agent.invoke({"ticker": "AAPL", "year": 2023, "force_refresh": True}, co
 
 ---
 
+---
+
+## Quality Audit Fixes (2026-04-18)
+
+Bugs identified by automated reliability audit; all fixed in `main`.
+
+| Issue | Status | File |
+|---|---|---|
+| QA-P0-1 — `test_financial_agent.py` asserts single-underscore cache keys (wrong contract) | ✅ Fixed | `tests/test_financial_agent.py:45,49,53,170` |
+| QA-P0-2 — `enrich_tickers()` crashes with `ValueError` when all profiles fail | ✅ Fixed | `financialtools/utils.py:enrich_tickers` |
+| QA-P1-1 — `resolve_sector()` returns newline-joined string for multi-row info_df, silently selecting wrong sector weights | ✅ Fixed | `financialtools/utils.py:resolve_sector` |
+| QA-P1-2 — `_download_single_ticker` sets `company_name` to newline-joined string for multi-row info_df | ✅ Fixed | `financialtools/wrappers.py:_download_single_ticker` |
+| QA-P1-3 — `dataframe_to_json` raises `ValueError` on NaN/Inf values; LLM payloads fail for banks/foreign tickers | ✅ Fixed | `financialtools/utils.py:dataframe_to_json` |
+| QA-P1-4 — `safe_div` crashes with `AttributeError` when `num`/`den` is a scalar (no `.notna()`) | ✅ Fixed | `financialtools/evaluator.py:safe_div` |
+
+### QA-P0-1 — Cache key test assertions used single-underscore format
+`cache_key()` was changed to double-underscore separator (M10, 2026-04-16) but four test assertions in `TestCacheUtils` and `TestPrepareFinancialDataTool` retained the old single-underscore values. Tests were asserting a contract that no longer existed. Updated to `"AAPL__2023"`, `"ENI.MI__all"`, `"MSFT__2022"`.
+
+### QA-P0-2 — `enrich_tickers()` crashes on total failure
+`pd.concat([])` raises `ValueError: No objects to concatenate`. Added early-return guard: if `profiles` is empty after the loop, return an empty `pd.DataFrame()` with a WARNING log. Callers can distinguish empty result from exception.
+
+### QA-P1-1 — `resolve_sector()` multi-row bug
+`info_df["sector"].str.lower().to_string(index=False)` on a multi-row Series produced `"technology\nfinancial-services"` which never matched any sector key, silently falling back to `"default"` weights. Fixed: `.iloc[0].lower()` — take the first row only.
+
+### QA-P1-2 — `_download_single_ticker` `company_name` multi-row bug
+Same `.to_string(index=False)` pattern applied to `info_df["longName"]` produced a newline-joined string when `get_info_data()` returned multiple rows. Fixed: `.iloc[0].lower().strip()`.
+
+### QA-P1-3 — `dataframe_to_json` rejects NaN/Inf
+Standard JSON does not allow `NaN` or `Infinity`. `json.dumps` raises `ValueError` for these values, which are common in metrics DataFrames for banks and foreign tickers. Fixed: replace `±Inf` with `None`, then replace `NaN` with `None` via `.where(df.notna(), other=None)` before serialising.
+
+### QA-P1-4 — `safe_div` scalar input crash
+When `num` or `den` is a plain Python scalar (e.g. a constant), `den.notna()` raises `AttributeError`. The bare `except Exception` then attempted `len(num)` which also fails for scalars, returning an empty array and silently corrupting metric columns. Fixed: cast both operands to `pd.Series` at entry. Return type annotation added: `-> np.ndarray`.
+
+---
+
 ## What Is Done Well
 
 - **Invariant documentation is thorough.** `processor.py`, `_cache.py`, `graph_nodes.py` all carry clear invariant blocks that explain contract, failure mode, and data flow.

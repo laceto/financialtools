@@ -42,15 +42,15 @@ class TestCacheUtils(unittest.TestCase):
 
     def test_cache_key_with_year(self):
         from agents._cache import cache_key
-        self.assertEqual(cache_key("AAPL", 2023), "AAPL_2023")
+        self.assertEqual(cache_key("AAPL", 2023), "AAPL__2023")
 
     def test_cache_key_no_year(self):
         from agents._cache import cache_key
-        self.assertEqual(cache_key("eni.mi", None), "ENI.MI_all")
+        self.assertEqual(cache_key("eni.mi", None), "ENI.MI__all")
 
     def test_cache_key_lowercase_ticker_normalised(self):
         from agents._cache import cache_key
-        self.assertEqual(cache_key("msft", 2022), "MSFT_2022")
+        self.assertEqual(cache_key("msft", 2022), "MSFT__2022")
 
     def test_write_and_read_payloads(self):
         """Round-trip payloads through disk cache."""
@@ -167,7 +167,7 @@ class TestPrepareFinancialDataTool(unittest.TestCase):
         result = self._call_tool("AAPL", "Technology", year=2023)
 
         self.assertNotIn("error", result)
-        self.assertEqual(result["cache_key"], "AAPL_2023")
+        self.assertEqual(result["cache_key"], "AAPL__2023")
         self.assertEqual(result["status"], "ready")
         mock_write.assert_called_once()
 
