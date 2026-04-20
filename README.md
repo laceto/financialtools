@@ -20,7 +20,7 @@ from financialtools.analysis import run_topic_analysis
 
 # 1 — Self-contained: download + evaluate + 8 LLM chains in one call
 result = run_topic_analysis("AAPL", sector="technology", year=2023)
-print(result.regime.regime)        # "bull" | "bear"
+print(result.regime.regime)        # "bull" | "bear" | "neutral"
 print(result.liquidity.rating)     # "strong" | "adequate" | "weak"
 print(result.red_flags.severity)   # "none" | "low" | "moderate" | "high"
 
@@ -56,7 +56,7 @@ print(result["final_report"])   # long/short conviction report in markdown
 | Module | Responsibility |
 |---|---|
 | `downloader.py` | `Downloader` — yfinance fetch + wide→long reshape; re-exports `RateLimiter` |
-| `evaluator.py` | `FundamentalMetricsEvaluator` — 24 scored metrics, 14 unscored extended metrics, composite scoring, red-flag detection; `_empty_result`, `SCORED_METRICS`, `_EMPTY_RESULT_KEYS` |
+| `evaluator.py` | `FundamentalMetricsEvaluator` — 24 scored metrics, 14 unscored extended metrics, composite scoring, red-flag detection; `empty_result()` public factory, `SCORED_METRICS` |
 | `processor.py` | Re-export shim — `from financialtools.processor import Downloader, FundamentalMetricsEvaluator` still works |
 | `wrappers.py` | Module-level `download_data()` + parallel helpers; `DownloaderWrapper` (backward-compat shim); `FundamentalEvaluator`; Excel export/read helpers |
 | `analysis.py` | `run_topic_analysis()` — self-contained pipeline (download → evaluate → 9 LLM chains) returning `TopicAnalysisResult`; re-exports `build_weights`, `list_sectors` |
@@ -101,7 +101,7 @@ result = assistant.evaluate()
 ```
 
 **Raises** `EvaluationError` if `data` is empty, contains multiple tickers, or has NaN-only ticker column.
-`evaluate()` also raises `EvaluationError` on any internal failure — callers that need a soft-failure path should catch it and call `_empty_result()` themselves.
+`evaluate()` also raises `EvaluationError` on any internal failure — callers that need a soft-failure path should catch it and call `empty_result()` themselves.
 
 `evaluate()` return keys:
 
@@ -121,7 +121,7 @@ evaluator = FundamentalEvaluator(df=merged_df, weights=weights_df)
 results = evaluator.evaluate_multiple(tickers, parallel=True)
 ```
 
-Uses `ThreadPoolExecutor` for parallel evaluation. Failed tickers return `_empty_result()` and are logged — they do not abort the batch.
+Uses `ThreadPoolExecutor` for parallel evaluation. Failed tickers return `empty_result()` and are logged — they do not abort the batch.
 
 ### `get_stock_evaluation_report` (`chains.py`, repo root)
 
@@ -151,7 +151,7 @@ result = run_topic_analysis(
     model="gpt-4.1-nano",          # OpenAI model (default)
 )
 # result: TopicAnalysisResult
-print(result.regime.regime)           # "bull" | "bear"
+print(result.regime.regime)           # "bull" | "bear" | "neutral"
 print(result.liquidity.rating)        # "strong" | "adequate" | "weak"
 print(result.growth.trajectory)       # "accelerating" | "stable" | "decelerating" | "declining"
 print(result.red_flags.severity)      # "none" | "low" | "moderate" | "high"
@@ -328,7 +328,7 @@ LANGSMITH_PROJECT=financialtools   # optional, defaults to "default"
 python -m unittest discover -s tests
 ```
 
-40 unit tests in `tests/test_processor.py` — all offline (no network, no `.env` required).
+101 unit tests across 4 test files (`test_processor.py`, `test_pydantic_models.py`, `test_wrappers.py`, `test_config.py`) — all offline (no network, no `.env` required).
 
 ## License
 

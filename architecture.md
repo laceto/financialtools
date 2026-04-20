@@ -23,9 +23,9 @@ The Streamlit app (`app.py`) and CLI (`scripts/run_analysis.py`) both use `run_t
 | Module | Responsibility |
 |---|---|
 | `downloader.py` | `Downloader` — yfinance fetch + wide→long reshape of balance sheet, income statement, cashflow, and info. Re-exports `RateLimiter` for backward compat. |
-| `evaluator.py` | `FundamentalMetricsEvaluator` — metric computation, 1–5 scoring, extended unscored metrics, red-flag detection. Module-level: `_empty_result()`, `_EMPTY_RESULT_KEYS`, `_REQUIRED_METRIC_COLS`, `SCORED_METRICS`. `FundamentalTraderAssistant` is a deprecated alias. |
+| `evaluator.py` | `FundamentalMetricsEvaluator` — metric computation, 1–5 scoring, extended unscored metrics, red-flag detection. Public: `empty_result()` factory, `SCORED_METRICS`. Private: `_empty_result()`, `_EMPTY_RESULT_KEYS`, `_REQUIRED_METRIC_COLS`. `FundamentalTraderAssistant` is a deprecated alias. |
 | `processor.py` | Re-export shim — re-exports all names from `downloader.py` and `evaluator.py` so existing `from financialtools.processor import …` calls continue to work. New code should import from `downloader` or `evaluator` directly. |
-| `config.py` | Sector-specific metric weight dicts. `sec_sector_metric_weights` (yfinance sectorKey convention, active pipeline). `sector_metric_weights` (legacy title-case, `chains.py` only). `grouped_weights` (legacy grouped display). Three private baseline dicts (`_STD_EXT`, `_FIN_EXT`, `_RE_EXT`) DRY-up the 13 extended-metric keys. No I/O at import time — pure Python dicts. |
+| `config.py` | Sector-specific metric weight dicts. `sec_sector_metric_weights` (yfinance sectorKey convention, active pipeline — single source of truth). `grouped_weights` (display-only grouped format). Three private baseline dicts (`_STD_EXT`, `_FIN_EXT`, `_RE_EXT`) DRY-up the 13 extended-metric keys. No I/O at import time — pure Python dicts. |
 | `utils.py` | `RateLimiter` (thread-safe sliding-window, generic utility). I/O helpers (`export_to_csv`, `export_to_xlsx`, `dataframe_to_json`, `flatten_weights`). `build_weights(sector)`, `list_sectors()`, `resolve_sector(info_df, fallback)` — single source of truth for sector-weight lookups. yfinance profile helpers (`get_ticker_profile`, `enrich_tickers`). |
 | `wrappers.py` | Module-level `download_data()` + private helpers (`_download_single_ticker`, `_download_multiple_tickers`, `_preprocess_df`). `DownloaderWrapper` is a backward-compat shim. `FundamentalEvaluator` (parallel evaluation via `ThreadPoolExecutor`). File handlers attached lazily on first download — importing `wrappers` does **not** create log files. `merge_results`, Excel export/read helpers. |
 | `analysis.py` | `run_topic_analysis(ticker, sector, year, model)` — self-contained pipeline. Returns `TopicAnalysisResult`. `_TOPIC_MAP` is the single source of truth for all 9 topic → `(prompt, model_cls)` pairs (8 topic models + regime). Re-exports `build_weights`, `list_sectors` from `utils.py`. Public helpers: `filter_year`, `normalise_time`. Built-in one-shot fix retry on parse error. |
@@ -70,7 +70,7 @@ merged_df + weights → FundamentalMetricsEvaluator(data, weights)  # raises Eva
       → metrics_red_flags(m_long)      # → self.red_flags (returns copy — does not mutate input)
       → compute_extended_metrics()     # 14 unscored metrics
       → returns dict: metrics, eval_metrics, composite_scores, raw_red_flags, red_flags, extended_metrics
-      → on failure: raises EvaluationError (callers needing soft-failure should catch + call _empty_result())
+      → on failure: raises EvaluationError (callers needing soft-failure should catch + call empty_result())
 ```
 
 **Score attribute schema — do not conflate:**

@@ -13,10 +13,9 @@ composite_score = sum(metric_score_i * weight_i) / sum(weight_i)
 `metric_score_i ∈ {1, 2, 3, 4, 5}`. Higher is better.
 
 **Which weights config to use:**
-- `analysis.py` / `agents/` pipeline → `config.sec_sector_metric_weights` (yfinance sectorKey convention: lowercase, dashes — e.g. `"technology"`, `"financial-services"`)
-- Legacy `chains.py` / direct `FundamentalTraderAssistant` calls → `config.sector_metric_weights` (title-case — e.g. `"Technology"`)
+- All pipelines (`analysis.py`, `agents/`, `chains.py`) → `config.sec_sector_metric_weights` (yfinance sectorKey convention: lowercase, dashes — e.g. `"technology"`, `"financial-services"`)
 
-Fallback to `config.grouped_weights` if the sector key is not found (logged as WARNING).
+Unknown sector keys fall back to the `"default"` entry in `sec_sector_metric_weights` (logged as WARNING by `resolve_sector`).
 
 ### 24 Scored Metrics (produced by `compute_metrics()`)
 
