@@ -13,7 +13,7 @@ Usage
     from financialtools.analysis import run_topic_analysis
 
     result = run_topic_analysis("AAPL", sector="Technology", year=2023)
-    print(result.regime.regime)              # "bull" | "bear"
+    print(result.regime.regime)              # "bull" | "bear" | "neutral"
     print(result.liquidity.rating)           # "strong" | "adequate" | "weak"
     print(result.growth.trajectory)          # "accelerating" | "stable" | ...
     print(result.evaluate_output["metrics"]) # raw DataFrame from evaluate()

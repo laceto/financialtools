@@ -36,8 +36,15 @@ class StockRegimeAssessment(BaseModel):
     ticker: str = Field(
         ..., description="The ticker of the stock under analysis"
     )
-    regime: Literal["bull", "bear"] = Field(
-        ..., description="The fundamental regime classification of the stock"
+    regime: Literal["bull", "bear", "neutral"] = Field(
+        ...,
+        description=(
+            "Fundamental regime classification based on observable metric trends. "
+            "'bull' = improving fundamentals: revenue growth, margin expansion, and positive FCF trend; "
+            "'bear' = deteriorating fundamentals: declining margins, negative FCF, or rising leverage; "
+            "'neutral' = stable fundamentals with no clear directional trend — use this when metrics "
+            "are neither clearly improving nor clearly deteriorating."
+        ),
     )
     regime_rationale: str = Field(
         ...,
@@ -508,11 +515,14 @@ class ComprehensiveStockAssessment(BaseModel):
     ticker: str = Field(
         ..., description="The ticker symbol of the stock under analysis"
     )
-    regime: Literal["bull", "bear"] = Field(
+    regime: Literal["bull", "bear", "neutral"] = Field(
         ...,
         description=(
-            "Overall fundamental regime: 'bull' = strong/improving fundamentals; "
-            "'bear' = weak/deteriorating fundamentals."
+            "Overall fundamental regime synthesised across all seven topic assessments. "
+            "'bull' = improving fundamentals: revenue growth, margin expansion, positive FCF trend; "
+            "'bear' = deteriorating fundamentals: declining margins, negative FCF, or rising leverage; "
+            "'neutral' = stable fundamentals with no clear directional trend — use when the evidence "
+            "is mixed or metrics are flat without meaningful improvement or deterioration."
         ),
     )
     regime_rationale: str = Field(

@@ -47,6 +47,7 @@ _RATING_COLOR = {
     "weak": "red",
     "bull": "green",
     "bear": "red",
+    "neutral": "orange",
     "overvalued": "red",
     "undervalued": "green",
     "fair": "blue",

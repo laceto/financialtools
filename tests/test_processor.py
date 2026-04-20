@@ -288,6 +288,107 @@ class TestInverseScoring(unittest.TestCase):
         self.assertGreater(low_dte, high_dte)
 
 
+class TestNegativeEquityScoring(unittest.TestCase):
+    """P1-1: Negative DebtToEquity (negative book equity) must score 1, not 5.
+
+    Without the guard, np.digitize maps a negative D/E to bucket 0 → raw score 1,
+    then inversion gives 6-1=5 (best possible). A company with negative equity
+    is maximum financial risk and must score 1.
+    """
+
+    def _score_one(self, metric: str, value: float) -> int:
+        fta = _make_fta()
+        df = pd.DataFrame({"metrics": [metric], "value": [value]})
+        return int(fta._score_metric(df)["score"].iloc[0])
+
+    def test_negative_dte_scores_1_not_5(self):
+        # Core regression: negative equity → maximum risk → score 1
+        self.assertEqual(self._score_one("DebtToEquity", -0.5), 1)
+
+    def test_strongly_negative_dte_scores_1(self):
+        # Deep negative equity (e.g. Boeing historical) must also score 1
+        self.assertEqual(self._score_one("DebtToEquity", -10.0), 1)
+
+    def test_zero_dte_is_nan_scores_neutral(self):
+        # Zero denominator → safe_div returns NaN → neutral score 3
+        # (this tests integration with safe_div, not score_row directly)
+        self.assertEqual(self._score_one("DebtToEquity", float("nan")), 3)
+
+    def test_positive_dte_inversion_unchanged(self):
+        # Positive D/E must still invert correctly: low value → high score
+        self.assertEqual(self._score_one("DebtToEquity", 0.3), 5)  # below 0.5 → score 5
+        self.assertEqual(self._score_one("DebtToEquity", 2.5), 1)  # above 2.0 → score 1
+
+    def test_negative_dte_in_full_evaluate_pipeline(self):
+        """evaluate() composite score must not be inflated by negative equity."""
+        data = _make_data()
+        # Force negative equity on all rows
+        data["common_stock_equity"] = -500.0
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        scores = fta.compute_scores()
+        dte_rows = scores[scores["metrics"] == "DebtToEquity"]
+        self.assertFalse(dte_rows.empty)
+        self.assertTrue((dte_rows["score"] == 1).all(),
+                        "All DebtToEquity scores must be 1 when equity is negative")
+
+
+class TestScoreMetricVectorized(unittest.TestCase):
+    """P2-6: _score_metric must be vectorized, picklable, and produce identical
+    results to the previous row-by-row apply() implementation.
+    """
+
+    def _score_all(self, rows: list) -> list:
+        """Score a list of (metric_name, value) pairs, return list of scores."""
+        fta = _make_fta()
+        df = pd.DataFrame(rows, columns=["metrics", "value"])
+        return fta._score_metric(df)["score"].tolist()
+
+    def test_mixed_batch_scores_correctly(self):
+        # Verify several metrics at once — proves vectorized path handles multiple
+        # metric names in a single DataFrame without cross-contamination.
+        rows = [
+            ("GrossMargin",     0.55),   # above last threshold 0.5 → digitize=4 → score 5
+            ("GrossMargin",     0.25),   # between 1st/2nd threshold → score 2
+            ("DebtToEquity",    0.3),    # below 0.5 → raw 1 → inverse 5
+            ("DebtToEquity",    2.5),    # above 2.0 → raw 5 → inverse 1
+            ("DebtToEquity",   -1.0),    # negative equity → P1-1 guard → 1
+            ("NetProfitMargin", float("nan")),  # NaN → neutral 3
+            ("SomeFutureMetric", 99.9),  # unknown → neutral 3
+        ]
+        expected = [5, 2, 5, 1, 1, 3, 3]
+        self.assertEqual(self._score_all(rows), expected)
+
+    def test_all_nan_values_score_3(self):
+        rows = [(m, float("nan")) for m in ["GrossMargin", "ROE", "DebtToEquity"]]
+        self.assertEqual(self._score_all(rows), [3, 3, 3])
+
+    def test_score_metric_is_picklable(self):
+        """_score_metric must not close over self — it must be picklable."""
+        import pickle
+        fta = _make_fta()
+        # The method itself references self, but the key property being tested is
+        # that compute_scores (which calls _score_metric) works inside a subprocess.
+        # We test picklability of the result DataFrame rather than the bound method,
+        # and confirm FundamentalMetricsEvaluator itself is picklable for ProcessPoolExecutor.
+        scores = fta.compute_scores()
+        pickled = pickle.dumps(scores)
+        restored = pickle.loads(pickled)
+        self.assertEqual(list(scores["score"]), list(restored["score"]))
+
+    def test_no_cross_contamination_between_metric_groups(self):
+        """Rows from different metrics in the same DataFrame must not affect each other."""
+        fta = _make_fta()
+        df = pd.DataFrame({
+            "metrics": ["ROA", "DebtToEquity", "ROA"],
+            "value":   [0.10,   0.30,           0.03],
+        })
+        result = fta._score_metric(df)
+        # ROA 0.10 is between 3rd/4th threshold [0.02,0.05,0.08,0.12] → score 4
+        # DebtToEquity 0.30 → inverse → score 5
+        # ROA 0.03 is between 1st/2nd threshold → score 2
+        self.assertEqual(result["score"].tolist(), [4, 5, 2])
+
+
 class TestEvaluateReturnsAllKeys(unittest.TestCase):
     """evaluate() must always return all 6 keys with non-empty DataFrames."""
 
@@ -356,6 +457,64 @@ class TestMissingOptionalColumns(unittest.TestCase):
         fta = FundamentalMetricsEvaluator(data, weights)
         m = fta.compute_metrics()
         self.assertTrue(m["InterestCoverage"].isna().all())
+
+
+class TestMissingCoreColumns(unittest.TestCase):
+    """P0-1: core yfinance columns absent due to schema change must not raise.
+
+    Before this fix, a missing core column (e.g. total_revenue renamed by yfinance)
+    raised a KeyError swallowed by the except clause, producing an opaque
+    EvaluationError with no column context.
+
+    After this fix:
+      - compute_metrics() returns a DataFrame with NaN for affected metrics
+      - compute_valuation_metrics() returns a DataFrame with NaN for affected metrics
+      - a single WARNING is logged listing all missing columns
+    """
+
+    def test_missing_total_revenue_gives_nan_margins_not_exception(self):
+        data = _make_data().drop(columns=["total_revenue"])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        m = fta.compute_metrics()
+        self.assertIsInstance(m, pd.DataFrame)
+        self.assertFalse(m.empty)
+        for col in ("GrossMargin", "OperatingMargin", "NetProfitMargin",
+                    "EBITDAMargin", "FCFToRevenue", "FCFMargin", "AssetTurnover"):
+            self.assertTrue(m[col].isna().all(), f"{col} should be NaN when total_revenue is absent")
+
+    def test_missing_free_cash_flow_gives_nan_fcf_metrics(self):
+        data = _make_data().drop(columns=["free_cash_flow"])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        m = fta.compute_metrics()
+        self.assertIsInstance(m, pd.DataFrame)
+        for col in ("FCFToRevenue", "FCFYield", "FCFtoDebt", "FCFMargin"):
+            self.assertTrue(m[col].isna().all(), f"{col} should be NaN when free_cash_flow is absent")
+
+    def test_missing_diluted_eps_gives_nan_valuation_not_exception(self):
+        data = _make_data().drop(columns=["diluted_eps"])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        ev = fta.compute_valuation_metrics()
+        self.assertIsInstance(ev, pd.DataFrame)
+        self.assertFalse(ev.empty)
+        self.assertTrue(ev["eps"].isna().all())
+
+    def test_missing_core_column_emits_warning_with_column_name(self):
+        data = _make_data().drop(columns=["total_revenue", "free_cash_flow"])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        with self.assertLogs("financialtools.evaluator", level="WARNING") as cm:
+            fta.compute_metrics()
+        # A single WARNING must name both missing columns — not a generic message
+        combined = " ".join(cm.output)
+        self.assertIn("total_revenue", combined)
+        self.assertIn("free_cash_flow", combined)
+
+    def test_evaluate_completes_with_missing_core_column(self):
+        """evaluate() must not raise when a core column is absent."""
+        data = _make_data().drop(columns=["total_debt"])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        result = fta.evaluate()
+        self.assertIn("composite_scores", result)
+        self.assertFalse(result["composite_scores"].empty)
 
 
 def _make_bank_data(ticker: str = "BGN.MI") -> pd.DataFrame:

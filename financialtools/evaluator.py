@@ -31,20 +31,63 @@ def _empty_result() -> dict:
     return {k: pd.DataFrame() for k in _EMPTY_RESULT_KEYS}
 
 
-# Reference list of metric column names produced by compute_metrics().
-# Used as documentation and for score_metric() threshold key alignment.
-# evaluate() and compute_scores() derive value_vars dynamically from compute_metrics()
-# output columns so that adding a new metric to compute_metrics() is automatically scored.
+def empty_result() -> dict:
+    """Public factory — return a fresh empty evaluate() result dict.
+
+    Use this instead of the private ``_empty_result`` wherever a fallback
+    result is needed outside of ``evaluator.py``.  All six canonical keys are
+    always present so callers can safely call ``result.get(key)`` without
+    guarding for None.
+
+    Returns
+    -------
+    dict
+        ``{"metrics": DataFrame, "eval_metrics": DataFrame,
+           "composite_scores": DataFrame, "raw_red_flags": DataFrame,
+           "red_flags": DataFrame, "extended_metrics": DataFrame}``
+        — all DataFrames are empty.
+    """
+    return _empty_result()
+
+
 # Columns that compute_metrics() accesses with hard bracket notation.
-# Financial-sector tickers (banks, insurance) structurally omit some of these.
-# compute_metrics() fills any absent column with np.nan so formulas that use them
+# Any column absent from the input DataFrame is filled with np.nan so formulas
 # produce NaN scores instead of raising KeyError.
+# Two categories:
+#   - Sector-conditional: banks / insurance structurally omit these
+#   - Core: should always be present; guard against yfinance schema changes
+# _fill_missing_cols() logs a single WARNING listing ALL absent columns before
+# filling them, giving an actionable diff instead of an opaque EvaluationError.
 _REQUIRED_METRIC_COLS: tuple = (
-    "gross_profit",       # absent for banks (no COGS)
-    "operating_income",   # absent for banks (use pretax_income instead in Option B)
-    "ebitda",             # absent for banks
-    "current_assets",     # absent for banks (different BS layout)
-    "current_liabilities",# absent for banks
+    # Sector-conditional (banks structurally omit these)
+    "gross_profit",
+    "operating_income",
+    "ebitda",
+    "current_assets",
+    "current_liabilities",
+    # Core — should always be present; guard against yfinance schema changes
+    "total_revenue",
+    "net_income_common_stockholders",
+    "total_assets",
+    "common_stock_equity",
+    "free_cash_flow",
+    "total_debt",
+    "operating_cash_flow",
+)
+
+# Columns required by compute_valuation_metrics().
+_REQUIRED_VALUATION_COLS: tuple = (
+    "common_stock_equity",
+    "free_cash_flow",
+    "diluted_eps",
+)
+
+# Columns required by compute_extended_metrics() with hard bracket access.
+_REQUIRED_EXTENDED_COLS: tuple = (
+    "total_revenue",
+    "net_income_common_stockholders",
+    "free_cash_flow",
+    "total_debt",
 )
 
 SCORED_METRICS: list = [
@@ -139,9 +182,27 @@ class FundamentalMetricsEvaluator:
             _logger.error(f"[{self.ticker}] safe_div failed: {e}", exc_info=True)
             return np.full(len(num), np.nan)
 
+    def _fill_missing_cols(self, d: pd.DataFrame, required: tuple) -> pd.DataFrame:
+        """Fill any absent required columns with NaN and emit one consolidated warning.
+
+        Emitting a single WARNING with the full column list gives an actionable diff
+        instead of a later opaque KeyError or EvaluationError with no column context.
+        """
+        missing = [c for c in required if c not in d.columns]
+        if missing:
+            _logger.warning(
+                "[%s] %d required column(s) absent — affected metrics will be NaN: %s. "
+                "This may indicate a yfinance schema change or an unsupported ticker type.",
+                self.ticker, len(missing), missing,
+            )
+            for col in missing:
+                d[col] = np.nan
+        return d
+
     def compute_valuation_metrics(self):
         try:
             d = self.d.copy()
+            d = self._fill_missing_cols(d, _REQUIRED_VALUATION_COLS)
 
             if "sharesoutstanding" in d.columns:
                 shares = d["sharesoutstanding"]
@@ -193,17 +254,11 @@ class FundamentalMetricsEvaluator:
         try:
             d = self.d.copy()
 
-            # Ensure columns that some sectors (e.g. banks) structurally omit are
-            # present before any formula references them.  Missing columns become a
-            # column of NaN, so all downstream safe_div() calls produce NaN scores
-            # instead of raising KeyError.  See _REQUIRED_METRIC_COLS.
-            for _col in _REQUIRED_METRIC_COLS:
-                if _col not in d.columns:
-                    _logger.warning(
-                        "[%s] column '%s' absent — metric(s) that depend on it will be NaN",
-                        self.ticker, _col,
-                    )
-                    d[_col] = np.nan
+            # Fill any absent required columns with NaN before formula evaluation.
+            # _fill_missing_cols() emits a single WARNING listing all missing columns,
+            # so a yfinance schema change produces an actionable message rather than
+            # an opaque KeyError swallowed by the except below.
+            d = self._fill_missing_cols(d, _REQUIRED_METRIC_COLS)
 
             # ── Profitability Margins ─────────────────────────────────────────
             d["GrossMargin"] = self.safe_div(d["gross_profit"], d["total_revenue"])
@@ -307,7 +362,8 @@ class FundamentalMetricsEvaluator:
         "ROE":                 [0.05, 0.1, 0.15, 0.2],
         "FCFToRevenue":        [0.02, 0.05, 0.1, 0.2],
         "FCFYield":            [0.02, 0.04, 0.06, 0.1],
-        "DebtToEquity":        [0.5, 1.0, 1.5, 2.0],   # inverse: lower is better
+        # inverse: lower is better; negative values (negative equity) → score 1 via guard in score_row
+        "DebtToEquity":        [0.5, 1.0, 1.5, 2.0],
         "CurrentRatio":        [1.0, 1.2, 1.5, 2.0],
         "FCFtoDebt":           [0.05, 0.1, 0.2, 0.3],
         # Liquidity (extended)
@@ -340,22 +396,40 @@ class FundamentalMetricsEvaluator:
         Apply trader-friendly scoring rules to a DataFrame with 'metrics' and 'value' columns.
 
         Returns a new DataFrame — does not mutate the input.
-        Uses class-level _SCORE_THRESHOLDS and _INVERSE_METRICS constants.
+
+        Vectorized implementation: one np.digitize call per metric name rather than
+        one Python function call per row.  This eliminates the row-by-row apply()
+        overhead and removes the closure over self, making the method independently
+        testable and picklable for ProcessPoolExecutor use.
+
+        Scoring rules
+        -------------
+        - NaN value or unknown metric name → neutral score 3
+        - DebtToEquity < 0 (negative book equity) → maximum risk score 1 (P1-1 guard)
+        - Known metric → np.digitize against 4 thresholds → raw score 1–5
+          inverse metrics (_INVERSE_METRICS) → 6 - raw_score
         """
         df = df.copy()
+        # Default: score 3 (neutral) for NaN values and metrics not in _SCORE_THRESHOLDS.
+        scores = pd.Series(3, index=df.index, dtype=np.int64)
 
-        def score_row(row):
-            name, value = row['metrics'], row['value']
-            if pd.isna(value):
-                return 3
-            if name in self._SCORE_THRESHOLDS:
-                score = np.digitize(value, self._SCORE_THRESHOLDS[name]) + 1
-                if name in self._INVERSE_METRICS:
-                    return 6 - score  # inverse: high raw value → low score
-                return score
-            return 3
+        non_null = df['value'].notna()
 
-        df['score'] = df.apply(score_row, axis=1)
+        for metric_name, thresholds in self._SCORE_THRESHOLDS.items():
+            mask = non_null & (df['metrics'] == metric_name)
+            if not mask.any():
+                continue
+            raw = (np.digitize(df.loc[mask, 'value'].to_numpy(), thresholds) + 1).astype(np.int64)
+            if metric_name in self._INVERSE_METRICS:
+                raw = 6 - raw
+            scores.loc[mask] = raw
+
+        # P1-1 guard: negative book equity → negative D/E ratio → maximum risk.
+        # Must run after the threshold loop so the inversion (above) cannot override it.
+        neg_dte = non_null & (df['metrics'] == 'DebtToEquity') & (df['value'] < 0)
+        scores.loc[neg_dte] = 1
+
+        df['score'] = scores
         return df
 
     def compute_scores(self):
@@ -425,6 +499,7 @@ class FundamentalMetricsEvaluator:
         """
         try:
             d = self.d.copy().sort_values("time").reset_index(drop=True)
+            d = self._fill_missing_cols(d, _REQUIRED_EXTENDED_COLS)
 
             _recv   = d.get("accounts_receivable",               pd.Series(np.nan, index=d.index))
             _inv    = d.get("inventory",                          pd.Series(np.nan, index=d.index))

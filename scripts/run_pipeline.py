@@ -58,7 +58,8 @@ import pandas as pd
 # --- package imports --------------------------------------------------------
 from financialtools.analysis import build_weights
 from financialtools.config import sec_sector_metric_weights
-from financialtools.processor import Downloader, _empty_result
+from financialtools.processor import Downloader
+from financialtools.evaluator import empty_result
 from financialtools.wrappers import export_financial_results, merge_results
 
 # ---------------------------------------------------------------------------
@@ -180,7 +181,7 @@ def evaluate_sector(
     Returns
     -------
     {ticker: evaluate_result_dict}
-        Tickers with empty DataFrames get _empty_result() directly.
+        Tickers with empty DataFrames get empty_result() directly.
     """
     from financialtools.processor import FundamentalMetricsEvaluator
     from financialtools.exceptions import EvaluationError
@@ -190,17 +191,17 @@ def evaluate_sector(
 
     for ticker, df in ticker_data.items():
         if df.empty:
-            results[ticker] = _empty_result()
+            results[ticker] = empty_result()
             continue
         try:
             assistant = FundamentalMetricsEvaluator(data=df, weights=weights)
             results[ticker] = assistant.evaluate()
         except EvaluationError as exc:
             logger.error(f"  {ticker}: EvaluationError — {exc}")
-            results[ticker] = _empty_result()
+            results[ticker] = empty_result()
         except Exception as exc:
             logger.error(f"  {ticker}: unexpected evaluation error — {exc}", exc_info=True)
-            results[ticker] = _empty_result()
+            results[ticker] = empty_result()
 
     return results
 

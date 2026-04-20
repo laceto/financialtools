@@ -1,20 +1,23 @@
-import time
 import pandas as pd
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from financialtools.utils import build_weights, export_to_xlsx, resolve_sector
-from financialtools.processor import Downloader, FundamentalMetricsEvaluator, _empty_result
+from financialtools.utils import build_weights, export_to_xlsx, resolve_sector, RateLimiter
+from financialtools.processor import Downloader, FundamentalMetricsEvaluator
+from financialtools.evaluator import empty_result
 from financialtools.exceptions import DownloadError
 
 
 import logging
 import traceback
 
-# Log directory is anchored to the package root, not the caller's cwd.
-# This ensures log files always land in <repo_root>/logs/ regardless of where
-# the module is imported from (tests/, notebooks/, scripts/, CI, etc.).
+# Log directory — configurable via FINANCIALTOOLS_LOG_DIR env var so that
+# containerised / read-only deployments can redirect logs without code changes.
+# Falls back to <repo_root>/logs/ anchored to the package root.
 import os as _os
-_LOGS_DIR = _os.path.join(_os.path.dirname(__file__), '..', 'logs')
+_LOGS_DIR = _os.environ.get(
+    "FINANCIALTOOLS_LOG_DIR",
+    _os.path.join(_os.path.dirname(__file__), '..', 'logs'),
+)
 
 # Logger instance — created at import time (cheap, no I/O).
 # File handlers are added lazily by _configure_logging() on first use so that
@@ -34,28 +37,50 @@ def _configure_logging() -> None:
     to perform any downloads do not trigger log-directory creation or file
     handle allocation.  Safe to call multiple times — subsequent calls are
     no-ops guarded by the module-level ``_handlers_configured`` flag.
+
+    Failure handling
+    ----------------
+    If the log directory cannot be created (e.g. read-only filesystem in Docker),
+    the function catches ``OSError`` and falls back to a ``StreamHandler`` (stderr)
+    rather than raising.  A single WARNING is emitted explaining the fallback and
+    how to override the log path via ``FINANCIALTOOLS_LOG_DIR``.
     """
     global _handlers_configured
     if _handlers_configured:
         return
-    _os.makedirs(_LOGS_DIR, exist_ok=True)
+
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-    info_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'info.log'))
-    info_handler.setLevel(logging.INFO)
-    info_handler.setFormatter(formatter)
+    try:
+        _os.makedirs(_LOGS_DIR, exist_ok=True)
 
-    error_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'error.log'))
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(formatter)
+        info_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'info.log'))
+        info_handler.setLevel(logging.INFO)
+        info_handler.setFormatter(formatter)
 
-    debug_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'debug.log'))
-    debug_handler.setLevel(logging.DEBUG)
-    debug_handler.setFormatter(formatter)
+        error_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'error.log'))
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(formatter)
 
-    logger.addHandler(info_handler)
-    logger.addHandler(error_handler)
-    logger.addHandler(debug_handler)
+        debug_handler = logging.FileHandler(_os.path.join(_LOGS_DIR, 'debug.log'))
+        debug_handler.setLevel(logging.DEBUG)
+        debug_handler.setFormatter(formatter)
+
+        logger.addHandler(info_handler)
+        logger.addHandler(error_handler)
+        logger.addHandler(debug_handler)
+
+    except OSError as exc:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        logger.warning(
+            "Cannot create log directory %r (%s) — falling back to stderr logging. "
+            "Set FINANCIALTOOLS_LOG_DIR to a writable path to enable file logging.",
+            _LOGS_DIR, exc,
+        )
+
     _handlers_configured = True
 
 
@@ -72,10 +97,20 @@ def _preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
+def _download_single_ticker(
+    ticker: str,
+    limiter: RateLimiter | None = None,
+) -> pd.DataFrame | None:
     """Download and return merged financials for one ticker, enriched with company_name and sector.
 
     Returns None on failure — never raises.
+
+    Parameters
+    ----------
+    ticker  : yfinance ticker symbol
+    limiter : optional RateLimiter — acquire() is called before the download so
+              concurrent workers share a single rate budget. When None (single-
+              ticker path), no rate limiting is applied.
 
     Enrichment
     ----------
@@ -86,7 +121,8 @@ def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
     _configure_logging()
     logger.info(f"[{ticker}] Starting download")
     try:
-        time.sleep(2)  # avoid hitting rate limits
+        if limiter is not None:
+            limiter.acquire()
         processor = Downloader.from_ticker(ticker)
         merged_data = processor.get_merged_data()
         merged_data.columns = merged_data.columns.str.lower().str.replace(" ", "_")
@@ -113,21 +149,34 @@ def _download_single_ticker(ticker: str) -> pd.DataFrame | None:
 def _download_multiple_tickers(
     tickers: list[str],
     max_workers: int = 4,
+    limiter: RateLimiter | None = None,
 ) -> pd.DataFrame | None:
     """Download and combine data for multiple tickers in parallel.
 
     Uses ThreadPoolExecutor so network I/O overlaps across tickers.
+    A shared RateLimiter (default: 20 calls/minute) is passed to each worker
+    so all concurrent threads draw from the same rate budget — replacing the
+    old per-worker time.sleep(2) which added fixed latency regardless of load.
+
     Each worker calls _download_single_ticker, which returns None on failure —
     no single ticker failure propagates to others or the caller.
+
+    Parameters
+    ----------
+    tickers     : list of yfinance ticker symbols
+    max_workers : thread pool size (default 4)
+    limiter     : optional RateLimiter override; defaults to RateLimiter(per_minute=20)
 
     Returns concatenated DataFrame of all successful downloads, or None if all fail.
     """
     _configure_logging()
+    if limiter is None:
+        limiter = RateLimiter(per_minute=20)
     fin_data: list[pd.DataFrame] = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_download_single_ticker, t): t
+            executor.submit(_download_single_ticker, t, limiter): t
             for t in tickers
         }
         for future in as_completed(futures):
@@ -250,7 +299,7 @@ class FundamentalEvaluator:
 
         except Exception as e:
             logger.error(f"[{ticker}] evaluate_single failed: {e}", exc_info=True)
-            return _empty_result()  # single source of truth from processor.py
+            return empty_result()  # single source of truth from processor.py
 
     def evaluate_multiple(self, tickers: list, parallel: bool = True, max_workers: int = 5) -> dict:
         """
@@ -275,13 +324,13 @@ class FundamentalEvaluator:
                     try:
                         results[ticker] = future.result()
                     except Exception as e:
-                        # Use _empty_result() — not None — so that merge_results()
+                        # Use empty_result() — not None — so that merge_results()
                         # can safely call result.get(key) on every entry without
                         # a NoneType AttributeError.
                         logger.error(
                             "[%s] Parallel evaluation failed: %s", ticker, e, exc_info=True
                         )
-                        results[ticker] = _empty_result()
+                        results[ticker] = empty_result()
         else:
             for ticker in tickers:
                 results[ticker] = self.evaluate_single(ticker)
@@ -302,7 +351,7 @@ def merge_results(results: dict, key: str) -> pd.DataFrame:
 
     Design note:
         Each value in results must be a dict (as returned by evaluate_single /
-        _empty_result) — never None. The isinstance guard below is a defensive
+        empty_result()) — never None. The isinstance guard below is a defensive
         last-resort check; evaluate_multiple guarantees this contract after S3 fix.
     """
     try:

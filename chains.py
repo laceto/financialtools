@@ -12,7 +12,7 @@
 #   # New (analysis.py):
 #   from financialtools.analysis import run_topic_analysis
 #   result = run_topic_analysis("AAPL", sector="technology", year=2023)
-#   print(result.regime.regime)   # "bull" | "bear"
+#   print(result.regime.regime)   # "bull" | "bear" | "neutral"
 #
 # See financialtools/analysis.py for full API documentation.
 
