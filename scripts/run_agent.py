@@ -3,13 +3,9 @@ run_agent.py — Interactive LangChain ReAct agent with financialtools tools
 =========================================================================
 
 Launches a REPL that lets you query the financialtools pipeline through a
-LangChain agent.  The agent has access to five tools:
+LangChain agent.  The agent has access to one tool:
 
-    list_available_tickers   — discover which tickers have been evaluated
-    get_stock_metrics        — financial metrics + composite score
-    get_sector_benchmarks    — peer-average benchmarks for a sector
-    get_red_flags            — red-flag warnings for a ticker
-    get_stock_regime_report  — full LLM bull/bear regime assessment
+    get_stock_regime_report  — full LLM bull/bear/neutral regime assessment
 
 Usage
 -----
@@ -38,6 +34,14 @@ Design invariants
 import argparse
 import logging
 import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Path bootstrap — tools.py lives at the project root, not inside the package.
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from dotenv import load_dotenv
 
@@ -60,29 +64,23 @@ from langchain.agents import create_agent          # noqa: E402
 from langchain_openai import ChatOpenAI            # noqa: E402
 from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
 
-from financialtools.tools import TOOLS             # noqa: E402
+from tools import TOOLS                            # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Agent system prompt
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = (
     "You are a fundamental stock analysis assistant powered by the financialtools library.\n\n"
-    "You have access to five tools:\n"
-    "  • list_available_tickers   — call this first to discover evaluated tickers\n"
-    "  • get_stock_metrics        — financial metrics, composite score\n"
-    "  • get_sector_benchmarks    — peer-average benchmarks for a sector\n"
-    "  • get_red_flags            — warning signals for a ticker\n"
-    "  • get_stock_regime_report  — full bull/bear LLM regime assessment\n\n"
+    "You have access to one tool:\n"
+    "  • get_stock_regime_report  — full bull/bear/neutral LLM regime assessment\n\n"
     "Workflow guidelines:\n"
-    "  1. When the user asks about a ticker you don't know is available, "
-    "call list_available_tickers first.\n"
-    "  2. For regime questions, use get_stock_regime_report — it already "
-    "incorporates metrics, benchmarks, and red flags.\n"
-    "  3. For targeted metric questions, use get_stock_metrics or "
-    "get_sector_benchmarks directly.\n"
-    "  4. If a tool returns {\"error\": ...}, explain the problem and suggest "
-    "running the pipeline.\n"
-    "  5. Always cite specific metric values when explaining your conclusions.\n"
+    "  1. For any regime or fundamental question, call get_stock_regime_report with "
+    "the ticker symbol, sector (yfinance sectorKey convention, e.g. 'technology'), "
+    "and an optional year.\n"
+    "  2. If the tool returns {\"error\": ...}, explain the problem and suggest "
+    "running  python scripts/run_pipeline.py  to generate the required Excel outputs.\n"
+    "  3. Always cite specific metric values from the tool response when explaining "
+    "your conclusions.\n"
 )
 
 # ---------------------------------------------------------------------------

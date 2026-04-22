@@ -3,14 +3,14 @@ run_analysis.py — CLI for single-ticker topic analysis
 =======================================================
 
 Downloads yfinance data, computes 24 scored + 14 extended metrics, then
-calls eight LLM chains (seven topic models + StockRegimeAssessment) and
+calls nine LLM chains (eight topic models + StockRegimeAssessment) and
 prints a structured report.
 
 Usage
 -----
-    python scripts/run_analysis.py --ticker AAPL --sector Technology
-    python scripts/run_analysis.py --ticker ENI.MI --sector Energy --year 2023
-    python scripts/run_analysis.py --ticker AAPL --sector Technology --model gpt-4o
+    python scripts/run_analysis.py --ticker AAPL --sector technology
+    python scripts/run_analysis.py --ticker ENI.MI --sector energy --year 2023
+    python scripts/run_analysis.py --ticker AAPL --sector technology --model gpt-4o
     python scripts/run_analysis.py --list-sectors
 
 Options
@@ -88,8 +88,6 @@ def _optional(label: str, value) -> str:
 
 def _print_report(result) -> None:
     """Print a human-readable report for a TopicAnalysisResult."""
-    from financialtools.analysis import TopicAnalysisResult
-
     print(_section(f"FUNDAMENTAL ANALYSIS — {result.ticker}"))
     print(_field("Sector", result.sector))
     if result.year:
@@ -98,7 +96,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Liquidity
     # ------------------------------------------------------------------
-    print(_sub("1 / 7  Liquidity"))
+    print(_sub("1 / 8  Liquidity"))
     if result.liquidity:
         a = result.liquidity
         print(_field("Rating", a.rating.upper()))
@@ -111,7 +109,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Solvency
     # ------------------------------------------------------------------
-    print(_sub("2 / 7  Solvency"))
+    print(_sub("2 / 8  Solvency"))
     if result.solvency:
         a = result.solvency
         print(_field("Rating", a.rating.upper()))
@@ -124,7 +122,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Profitability
     # ------------------------------------------------------------------
-    print(_sub("3 / 7  Profitability"))
+    print(_sub("3 / 8  Profitability"))
     if result.profitability:
         a = result.profitability
         print(_field("Rating", a.rating.upper()))
@@ -137,7 +135,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Efficiency
     # ------------------------------------------------------------------
-    print(_sub("4 / 7  Efficiency"))
+    print(_sub("4 / 8  Efficiency"))
     if result.efficiency:
         a = result.efficiency
         print(_field("Rating", a.rating.upper()))
@@ -150,7 +148,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Cash Flow
     # ------------------------------------------------------------------
-    print(_sub("5 / 7  Cash Flow"))
+    print(_sub("5 / 8  Cash Flow"))
     if result.cash_flow:
         a = result.cash_flow
         print(_field("Rating", a.rating.upper()))
@@ -163,7 +161,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Growth
     # ------------------------------------------------------------------
-    print(_sub("6 / 7  Growth"))
+    print(_sub("6 / 8  Growth"))
     if result.growth:
         a = result.growth
         print(_field("Trajectory", a.trajectory.upper()))
@@ -176,7 +174,7 @@ def _print_report(result) -> None:
     # ------------------------------------------------------------------
     # Red Flags
     # ------------------------------------------------------------------
-    print(_sub("7 / 7  Red Flags"))
+    print(_sub("7 / 8  Red Flags"))
     if result.red_flags:
         a = result.red_flags
         print(_field("Severity", a.severity.upper()))
@@ -184,6 +182,23 @@ def _print_report(result) -> None:
         print(_optional("Cash Flow Flags", a.cash_flow_flags))
         print(_optional("Threshold Flags", a.threshold_flags))
         print(_optional("Quality Concerns", a.quality_concerns))
+    else:
+        print("  [chain failed — see logs]")
+
+    # ------------------------------------------------------------------
+    # Quantitative Overview
+    # ------------------------------------------------------------------
+    print(_sub("8 / 8  Quantitative Overview"))
+    if result.quantitative_overview:
+        a = result.quantitative_overview
+        print(_field("Overall Rating", a.overall_rating.upper()))
+        print(_field("Composite Trend", a.composite_trend.upper()))
+        print(_field("Trend Rationale", a.composite_trend_rationale))
+        print(_field("Scoring Profile", a.scoring_profile))
+        print(_field("Valuation Context", a.valuation_context))
+        print(_field("Cross-dim Signals", a.cross_dimensional_signals))
+        print(_field("Data Completeness", a.data_completeness.upper()))
+        print(_optional("Concerns", a.concerns))
     else:
         print("  [chain failed — see logs]")
 

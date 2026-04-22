@@ -7,13 +7,17 @@ Usage
     python scripts/run_pipeline.py                          # default settings
     python scripts/run_pipeline.py --tickers path/to/file  # custom ticker file
     python scripts/run_pipeline.py --sleep 4 --resume      # 4-second sleep, skip done sectors
-    python scripts/run_pipeline.py --sectors Technology Finance  # subset of sectors
+    python scripts/run_pipeline.py --sectors technology financial-services  # subset of sectors
     python scripts/run_pipeline.py --no-benchmarks          # skip benchmark file generation
 
-Ticker file format (tab-separated, same as sector_ticker.txt):
-    ticker  sector  name  marginabile
-    AAPL    Technology  Apple Inc  1
-    ENI.MI  Energy  Eni SpA  1
+Ticker file format (tab-separated, same as ftse_mib.txt):
+    ticker  sector
+    AAPL    technology
+    ENI.MI  energy
+
+Extra columns are allowed and ignored.  Sector must match a key in
+config.sec_sector_metric_weights (lowercase-dash, e.g. "technology",
+"financial-services").  Unknown sectors fall back to "default".
 
 Output
 ------
@@ -30,7 +34,7 @@ Output
 Pipeline stages
 ---------------
   1. Download  — one ticker at a time, sequential, with configurable sleep
-  2. Evaluate  — FundamentalTraderAssistant per ticker, sector-specific weights
+  2. Evaluate  — FundamentalMetricsEvaluator per ticker, sector-specific weights
   3. Export    — five canonical Excel files via export_financial_results()
   4. Benchmark — sector averages written to metrics_by_sectors.xlsx and
                  eval_metrics_by_sectors.xlsx so chains.py can compare any
@@ -40,7 +44,7 @@ Design invariants
 -----------------
 - One ticker downloaded at a time (sequential) to respect yfinance rate limits.
 - Each ticker is evaluated using the weights for its own sector from config.sec_sector_metric_weights.
-- Unknown sectors fall back to "Default" with a warning.
+- Unknown sectors fall back to "default" with a warning (matches sec_sector_metric_weights key).
 - On --resume, sectors whose checkpoint file already exists are skipped entirely.
 - Benchmark files are always recomputed from the full metrics.xlsx after export,
   so they reflect all tickers — including those from a previous run.
@@ -78,7 +82,7 @@ logger.addHandler(_console)
 # Constants
 # ---------------------------------------------------------------------------
 DEFAULT_TICKERS_FILE = os.path.join(
-    os.path.dirname(__file__), "..", "financialtools", "data", "sector_ticker.txt"
+    os.path.dirname(__file__), "..", "financialtools", "data", "ftse_mib.txt"
 )
 DEFAULT_OUTPUT_DIR = "financial_data"
 DEFAULT_SLEEP_SECONDS = 3
@@ -171,7 +175,7 @@ def evaluate_sector(
     sector: str,
 ) -> dict[str, dict]:
     """
-    Run FundamentalTraderAssistant.evaluate() for each ticker whose data is non-empty.
+    Run FundamentalMetricsEvaluator.evaluate() for each ticker whose data is non-empty.
 
     Parameters
     ----------

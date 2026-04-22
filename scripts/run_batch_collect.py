@@ -41,6 +41,7 @@ Summary printed to stdout at the end.
 Design invariants
 -----------------
 - custom_id format: "{cache_key}__{topic}" — same convention as run_batch_submit.py.
+  cache_key uses "__" internally ({TICKER}__{year}), so parsing uses rsplit not split.
 - Per-item errors in the batch response (item["error"]) are logged and the
   topic result is stored as {"error": "..."} in the cache — compile_report_node
   handles unavailable topics gracefully.
@@ -107,10 +108,13 @@ def _parse_custom_id(custom_id: str) -> tuple[str, str]:
     """
     Split "cache_key__topic" into (cache_key, topic).
 
-    Invariant: custom_id always has exactly one "__" separator.
+    Uses rsplit("__", 1) because cache_key itself contains "__" as a separator
+    (e.g. "AAPL__2023__liquidity" → cache_key="AAPL__2023", topic="liquidity").
+    A left-side split would give ("AAPL", "2023__liquidity") — wrong.
+
     Raises ValueError on malformed IDs.
     """
-    parts = custom_id.split("__", maxsplit=1)
+    parts = custom_id.rsplit("__", maxsplit=1)
     if len(parts) != 2:
         raise ValueError(f"Malformed custom_id: {custom_id!r}  (expected 'cache_key__topic')")
     return parts[0], parts[1]

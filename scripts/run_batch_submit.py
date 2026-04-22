@@ -54,8 +54,9 @@ Design invariants
 -----------------
 - Download is sequential — yfinance rate-limits concurrent requests.
 - One JSONL batch job for all tickers × 8 topics.
-- custom_id format: "{cache_key}__{topic}" — double underscore separates the
-  two parts because cache_key itself uses a single underscore ({TICKER}_{year}).
+- custom_id format: "{cache_key}__{topic}" — the topic is appended with "__"
+  after the cache_key; the cache_key itself also uses "__" as its separator
+  ({TICKER}__{year}), so parse with rsplit("__", 1) not split.
 - system prompts are filled with format_instructions="" because the response
   format is enforced by the API-level response_format parameter (strict mode).
 - Per-ticker download failures are logged and skipped; the remaining tickers
@@ -214,7 +215,7 @@ def _build_task(
     Build one Batch API task dict for (cache_key, topic).
 
     custom_id format: "{cache_key}__{topic}"
-    Double underscore separates parts because cache_key itself uses "_".
+    Parse with rsplit("__", 1) — cache_key itself contains "__" ({TICKER}__{year}).
     """
     from financialtools.analysis import _TOPIC_MAP
 

@@ -52,7 +52,7 @@ The Financial Analysis Manager is a LangGraph StateGraph:
     set_model          ← injects model name into AnalysisState
       │
       ▼
-    prepare_data       ← downloads yfinance data, runs FundamentalTraderAssistant,
+    prepare_data       ← downloads yfinance data, runs FundamentalMetricsEvaluator,
       │                  writes 5 payload JSON strings to state
       │
       ├── liquidity_analyst ──────────────────────────────────────────┐
