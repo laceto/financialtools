@@ -182,13 +182,53 @@ class FundamentalMetricsEvaluator:
             _logger.error(f"[{self.ticker}] safe_div failed: {e}", exc_info=True)
             return np.full(len(num), np.nan)
 
-    def _fill_missing_cols(self, d: pd.DataFrame, required: tuple) -> pd.DataFrame:
-        """Fill any absent required columns with NaN and emit one consolidated warning.
+    @staticmethod
+    def _derive_total_debt(d: pd.DataFrame) -> pd.Series | None:
+        """Derive total_debt from component columns when yfinance omits the aggregate.
 
-        Emitting a single WARNING with the full column list gives an actionable diff
-        instead of a later opaque KeyError or EvaluationError with no column context.
+        Preference order:
+          1. current_debt + long_term_debt              (financial debt only)
+          2. current_debt_and_capital_lease_obligation
+             + long_term_debt_and_capital_lease_obligation  (debt + leases)
+
+        Returns a Series on success, None when no combination is available.
+        """
+        cols = set(d.columns)
+        if {"current_debt", "long_term_debt"}.issubset(cols):
+            return d["current_debt"].add(d["long_term_debt"], fill_value=0)
+        if {
+            "current_debt_and_capital_lease_obligation",
+            "long_term_debt_and_capital_lease_obligation",
+        }.issubset(cols):
+            return d["current_debt_and_capital_lease_obligation"].add(
+                d["long_term_debt_and_capital_lease_obligation"], fill_value=0
+            )
+        return None
+
+    def _fill_missing_cols(self, d: pd.DataFrame, required: tuple) -> pd.DataFrame:
+        """Fill absent required columns — attempt derivation before NaN fallback.
+
+        For total_debt: tries to compute it from component columns so tickers
+        that omit the yfinance aggregate (e.g. TCEHY) still produce valid metrics.
+        Other absent columns are filled with NaN and collected into one WARNING.
         """
         missing = [c for c in required if c not in d.columns]
+        if not missing:
+            return d
+
+        # ── total_debt derivation ──────────────────────────────────────────────
+        if "total_debt" in missing:
+            derived = self._derive_total_debt(d)
+            if derived is not None:
+                d["total_debt"] = derived
+                missing.remove("total_debt")
+                _logger.debug(
+                    "[%s] total_debt derived from component columns (no aggregate provided)",
+                    self.ticker,
+                )
+            # else: falls through to the WARNING below with total_debt still listed
+
+        # ── remaining columns: NaN fill + consolidated warning ─────────────────
         if missing:
             _logger.warning(
                 "[%s] %d required column(s) absent — affected metrics will be NaN: %s. "

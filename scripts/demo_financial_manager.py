@@ -104,6 +104,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Reconfigure stdout/stderr to UTF-8 on Windows so box-drawing characters
+# in section headers don't raise UnicodeEncodeError (caught as ValueError).
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 # ---------------------------------------------------------------------------
 # Logging: INFO to stderr so stdout stays clean for report output
 # ---------------------------------------------------------------------------
@@ -138,9 +145,11 @@ def _sub(title: str) -> str:
     return f"\n{_SEP}\n  {title}\n{_SEP}"
 
 
-def _save_report(ticker: str, report: str) -> Path:
-    """Write *report* to ``{ticker}.md`` in the current working directory."""
-    out = Path(f"{ticker}.md")
+def _save_report(ticker: str, report: str, output_dir: str | None = None) -> Path:
+    """Write *report* to ``{ticker}.md`` inside *output_dir* (default: CWD)."""
+    folder = Path(output_dir) if output_dir else Path(".")
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"{ticker}.md"
     out.write_text(report, encoding="utf-8")
     logger.info("Report saved → %s", out.resolve())
     return out
@@ -150,7 +159,7 @@ def _save_report(ticker: str, report: str) -> Path:
 # Mode 1: invoke — blocking, print final_report
 # ---------------------------------------------------------------------------
 
-def demo_invoke(ticker: str, sector: str | None, year: int | None, model: str) -> None:
+def demo_invoke(ticker: str, sector: str | None, year: int | None, model: str, output_dir: str | None = None) -> None:
     """
     Simplest usage pattern.
 
@@ -175,7 +184,7 @@ def demo_invoke(ticker: str, sector: str | None, year: int | None, model: str) -
 
     print(_sub("Final Report"))
     print(result["final_report"])
-    _save_report(ticker, result["final_report"])
+    _save_report(ticker, result["final_report"], output_dir)
     print(f"\n{_DSEP}\n")
 
 
@@ -183,7 +192,7 @@ def demo_invoke(ticker: str, sector: str | None, year: int | None, model: str) -
 # Mode 2: stream — observe each subagent as it completes
 # ---------------------------------------------------------------------------
 
-def demo_stream(ticker: str, sector: str | None, year: int | None, model: str) -> None:
+def demo_stream(ticker: str, sector: str | None, year: int | None, model: str, output_dir: str | None = None) -> None:
     """
     Streaming usage pattern.
 
@@ -246,7 +255,7 @@ def demo_stream(ticker: str, sector: str | None, year: int | None, model: str) -
     final_report = final_state.get("final_report", "")
     print(final_report or "[no final_report in state]")
     if final_report:
-        _save_report(ticker, final_report)
+        _save_report(ticker, final_report, output_dir)
     print(f"\n{_DSEP}\n")
 
 
@@ -254,7 +263,7 @@ def demo_stream(ticker: str, sector: str | None, year: int | None, model: str) -
 # Mode 3: topics — inspect every topic result dict individually
 # ---------------------------------------------------------------------------
 
-def demo_topics(ticker: str, sector: str | None, year: int | None, model: str) -> None:
+def demo_topics(ticker: str, sector: str | None, year: int | None, model: str, output_dir: str | None = None) -> None:
     """
     Programmatic inspection of individual topic results.
 
@@ -330,7 +339,7 @@ def demo_topics(ticker: str, sector: str | None, year: int | None, model: str) -
     final_report = result.get("final_report", "")
     print(final_report or "[no final_report]")
     if final_report:
-        _save_report(ticker, final_report)
+        _save_report(ticker, final_report, output_dir)
     print(f"\n{_DSEP}\n")
 
 
@@ -447,6 +456,8 @@ def _parse_args() -> argparse.Namespace:
                    default=None,
                    metavar="TOPIC",
                    help=f"Topic for --mode subgraph. One of: {', '.join(TOPIC_NAMES)}")
+    p.add_argument("--output-dir", default=None, metavar="DIR",
+                   help="Directory to save {ticker}.md (default: current directory)")
     return p.parse_args()
 
 
@@ -460,11 +471,11 @@ def main() -> int:
 
     try:
         if args.mode == "invoke":
-            demo_invoke(args.ticker, args.sector, args.year, args.model)
+            demo_invoke(args.ticker, args.sector, args.year, args.model, args.output_dir)
         elif args.mode == "stream":
-            demo_stream(args.ticker, args.sector, args.year, args.model)
+            demo_stream(args.ticker, args.sector, args.year, args.model, args.output_dir)
         elif args.mode == "topics":
-            demo_topics(args.ticker, args.sector, args.year, args.model)
+            demo_topics(args.ticker, args.sector, args.year, args.model, args.output_dir)
         elif args.mode == "subgraph":
             demo_subgraph(args.ticker, args.sector, args.year, args.model, args.topic)
     except ValueError as exc:

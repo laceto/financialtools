@@ -516,6 +516,46 @@ class TestMissingCoreColumns(unittest.TestCase):
         self.assertIn("composite_scores", result)
         self.assertFalse(result["composite_scores"].empty)
 
+    def test_total_debt_fallback_option1_no_warning(self):
+        """When total_debt is absent but current_debt + long_term_debt are present,
+        no WARNING is emitted and debt-dependent metrics are non-NaN."""
+        data = _make_data().drop(columns=["total_debt"])
+        # Add the Option 1 component columns (values match the original total_debt)
+        rev = data["total_revenue"].tolist()
+        data["current_debt"]      = [r * 0.2 for r in rev]
+        data["long_term_debt"]    = [r * 0.3 for r in rev]
+
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        # assertLogs would fail if no log record is emitted — use assertNoLogs (3.10+)
+        # or catch and assert warning is absent from metrics output
+        import logging
+        with self.assertLogs("financialtools.evaluator", level="DEBUG") as cm:
+            m = fta.compute_metrics()
+
+        # No WARNING-level message about total_debt
+        warnings = [r for r in cm.output if "WARNING" in r and "total_debt" in r]
+        self.assertEqual(warnings, [], "Should not emit WARNING when fallback succeeds")
+
+        # Debt-dependent metrics must be numeric (not all-NaN)
+        self.assertFalse(m["DebtToEquity"].isna().all(), "DebtToEquity should be non-NaN after fallback")
+        self.assertFalse(m["FCFtoDebt"].isna().all(),    "FCFtoDebt should be non-NaN after fallback")
+
+    def test_total_debt_fallback_emits_warning_when_all_sources_absent(self):
+        """WARNING is still emitted when total_debt and all fallback columns are absent."""
+        drop_cols = [
+            "total_debt",
+            "current_debt", "long_term_debt",
+            "current_debt_and_capital_lease_obligation",
+            "long_term_debt_and_capital_lease_obligation",
+        ]
+        # Only drop columns that actually exist in the fixture
+        data = _make_data().drop(columns=[c for c in drop_cols if c in _make_data().columns])
+        fta = FundamentalMetricsEvaluator(data, _make_weights())
+        with self.assertLogs("financialtools.evaluator", level="WARNING") as cm:
+            fta.compute_metrics()
+        combined = " ".join(cm.output)
+        self.assertIn("total_debt", combined)
+
 
 def _make_bank_data(ticker: str = "BGN.MI") -> pd.DataFrame:
     """
