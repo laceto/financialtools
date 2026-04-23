@@ -138,6 +138,14 @@ def _sub(title: str) -> str:
     return f"\n{_SEP}\n  {title}\n{_SEP}"
 
 
+def _save_report(ticker: str, report: str) -> Path:
+    """Write *report* to ``{ticker}.md`` in the current working directory."""
+    out = Path(f"{ticker}.md")
+    out.write_text(report, encoding="utf-8")
+    logger.info("Report saved → %s", out.resolve())
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Mode 1: invoke — blocking, print final_report
 # ---------------------------------------------------------------------------
@@ -167,6 +175,7 @@ def demo_invoke(ticker: str, sector: str | None, year: int | None, model: str) -
 
     print(_sub("Final Report"))
     print(result["final_report"])
+    _save_report(ticker, result["final_report"])
     print(f"\n{_DSEP}\n")
 
 
@@ -234,7 +243,10 @@ def demo_stream(ticker: str, sector: str | None, year: int | None, model: str) -
             print("  [compile_report]  → report ready")
 
     print(_sub("Final Report (from last stream chunk)"))
-    print(final_state.get("final_report", "[no final_report in state]"))
+    final_report = final_state.get("final_report", "")
+    print(final_report or "[no final_report in state]")
+    if final_report:
+        _save_report(ticker, final_report)
     print(f"\n{_DSEP}\n")
 
 
@@ -315,7 +327,10 @@ def demo_topics(ticker: str, sector: str | None, year: int | None, model: str) -
 
     # ── Final synthesised report ──────────────────────────────────────────────
     print(_section("SYNTHESISED REPORT (compile_report output)"))
-    print(result.get("final_report", "[no final_report]"))
+    final_report = result.get("final_report", "")
+    print(final_report or "[no final_report]")
+    if final_report:
+        _save_report(ticker, final_report)
     print(f"\n{_DSEP}\n")
 
 
